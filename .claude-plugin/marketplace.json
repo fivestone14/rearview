@@ -1,0 +1,6 @@
+{
+  "name": "rearview",
+  "description": "Rearview: review every Claude Code turn, in plain English.",
+  "owner": { "name": "fivestone14" },
+  "plugins": [{ "name": "rearview", "source": "./" }]
+}

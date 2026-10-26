@@ -1,0 +1,9 @@
+# Written by Claude Code each time it loads the plugin
+.claude-plugin/types/
+
+.DS_Store
+*.log
+node_modules/
+
+# Notes Claude Code sessions write while working on this repo
+.claude/
