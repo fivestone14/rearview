@@ -1,6 +1,6 @@
 {
   "name": "rearview",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "After every Claude Code turn: did it do what you asked, what changed and why, and steer it next time.",
   "author": { "name": "fivestone14" },
   "license": "MIT",
