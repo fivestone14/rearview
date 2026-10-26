@@ -8,7 +8,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import { unifiedDiff } from './diff'
-import { looksLikeSecretFile, projectPath, readProjectFile, runInProject } from './paths'
+import { looksLikeSecretFile, projectPath, projectStoreKey, readProjectFile, runInProject } from './paths'
 import { getActiveTurn, getTurns, updateActiveTurn, updateTurns } from './state'
 import { findImporters } from './trace'
 import type { ActiveTurn, ChangedFile, Turn } from '../types'
@@ -220,17 +220,17 @@ async function agentTextSince($: EngineInterface, rowsBefore: number): Promise<s
   return text.length <= MAX_AGENT_TEXT_CHARS ? text : `${text.slice(0, MAX_AGENT_TEXT_CHARS)}\n[... more left out]`
 }
 
-/** The store key holds the version of the Turn shape, so turns saved by an older version are not misread. */
-async function storeKey($: EngineInterface): Promise<string> {
-  return `turns:v1:${await $.session.root()}`
+/** The key holds the version of the Turn shape, so turns saved by an older version are not misread. */
+async function turnsStoreKey($: EngineInterface): Promise<string> {
+  return projectStoreKey($, 'turns:v1')
 }
 
 /** Keeps finished turns across sessions, per project. */
 export async function saveTurns($: EngineInterface): Promise<void> {
-  await $.store.set(await storeKey($), await getTurns($))
+  await $.store.set(await turnsStoreKey($), await getTurns($))
 }
 
 export async function loadTurns($: EngineInterface): Promise<void> {
-  const saved = await $.store.get(await storeKey($))
+  const saved = await $.store.get(await turnsStoreKey($))
   if (Array.isArray(saved)) await updateTurns($, () => saved as Turn[])
 }

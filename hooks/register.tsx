@@ -44,15 +44,20 @@ export const register: Register = (on, options) => {
   }
 
   on('session.start', async ($, e, next) => {
-    await loadTurns($)
-    const principles = await loadPrinciples($)
-    await setPrinciples($, principles)
-    if (!principles.isTrusted) $.ui.toast('Rearview: this project has a principles file you have not approved. See the Principles tab.')
+    // The command and the reviewer come first, so a problem loading saved data cannot switch them off.
     await $.command.register({ name: 'rearview', description: 'Open Rearview: did Claude do what you asked, and why' })
     // Reviews run from a timer so they never hold up the end of a turn.
     $.clock.every(REVIEW_POLL_MS, () => {
       reviewNextPendingTurn($, models.review).catch(error => $.ui.log(`Rearview reviewer: ${String(error)}`))
     })
+    try {
+      await loadTurns($)
+      const principles = await loadPrinciples($)
+      await setPrinciples($, principles)
+      if (!principles.isTrusted) $.ui.toast('Rearview: this project has a principles file you have not approved. See the Principles tab.')
+    } catch (error) {
+      $.ui.log(`Rearview could not load saved turns or principles: ${String(error)}`)
+    }
     // A window that attached before Rearview loaded raises no session.attach, so check now too.
     const surfaces = await $.session.surfaces()
     if (surfaces.includes('desktop') || surfaces.includes('vscode')) void openPane($)

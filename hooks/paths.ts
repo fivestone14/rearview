@@ -30,6 +30,20 @@ export async function absolutePath($: EngineInterface, path: string): Promise<st
   return path.startsWith('/') ? path : `${await $.session.root()}/${path}`
 }
 
+/** SHA-256 of a text, as 64 hex characters. */
+export async function sha256(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * A key for Rearview's plugin store that belongs to this project, e.g. `turns:v1:3f2a…`.
+ * The project path is hashed because store keys are limited to 256 characters.
+ */
+export async function projectStoreKey($: EngineInterface, name: string): Promise<string> {
+  return `${name}:${await sha256(await $.session.root())}`
+}
+
 /** Reads a project file's text, or null when it is missing, too large, or binary. */
 export async function readProjectFile($: EngineInterface, path: string): Promise<string | null> {
   try {

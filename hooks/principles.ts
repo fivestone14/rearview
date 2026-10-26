@@ -12,7 +12,7 @@
 
 import type { EngineInterface } from 'claude-code'
 
-import { readProjectFile, writeProjectFile } from './paths'
+import { projectStoreKey, readProjectFile, sha256, writeProjectFile } from './paths'
 import type { Principle, PrincipleSet, Signal } from '../types'
 
 export const PRINCIPLES_FILE = '.claude/rearview/principles.md'
@@ -31,14 +31,14 @@ export async function loadPrinciples($: EngineInterface): Promise<PrincipleSet> 
   const text = await readProjectFile($, PRINCIPLES_FILE)
   if (text === null) return { list: [], isTrusted: true }
   const approved = await $.store.get(await trustStoreKey($))
-  return { list: parsePrinciples(text), isTrusted: approved === (await fingerprint(text)) }
+  return { list: parsePrinciples(text), isTrusted: approved === (await sha256(text)) }
 }
 
 /** Writes principles.md and records its contents as approved. */
 export async function savePrinciples($: EngineInterface, list: Principle[]): Promise<PrincipleSet> {
   const text = formatPrinciples(list)
   await writeProjectFile($, PRINCIPLES_FILE, text)
-  await $.store.set(await trustStoreKey($), await fingerprint(text))
+  await $.store.set(await trustStoreKey($), await sha256(text))
   return { list, isTrusted: true }
 }
 
@@ -46,7 +46,7 @@ export async function savePrinciples($: EngineInterface, list: Principle[]): Pro
 export async function trustPrinciples($: EngineInterface): Promise<PrincipleSet> {
   const text = await readProjectFile($, PRINCIPLES_FILE)
   if (text === null) return { list: [], isTrusted: true }
-  await $.store.set(await trustStoreKey($), await fingerprint(text))
+  await $.store.set(await trustStoreKey($), await sha256(text))
   return { list: parsePrinciples(text), isTrusted: true }
 }
 
@@ -55,14 +55,9 @@ export function usablePrinciples(set: PrincipleSet): Principle[] {
   return set.isTrusted ? set.list : []
 }
 
+/** Where the fingerprint of the approved principles file is kept. */
 async function trustStoreKey($: EngineInterface): Promise<string> {
-  return `principles-approved:v1:${await $.session.root()}`
-}
-
-/** SHA-256 of the file's text, as hex. */
-async function fingerprint(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
-  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+  return projectStoreKey($, 'principles-approved:v1')
 }
 
 /** Parses `## id` sections with `- field: value` lines. Unknown fields are ignored. */
