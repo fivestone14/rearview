@@ -6,6 +6,7 @@ import { blockingPrinciple, formatPrinciples, matchesGlob, parsePrinciples, prin
 import { parseReview } from '../hooks/review'
 import { looksLikeSecretFile } from '../hooks/paths'
 import { parseImports, resolveImport } from '../hooks/trace'
+import { isSystemOrigin } from '../hooks/turn'
 import type { Principle } from '../types'
 
 // ---------- diffs ----------
@@ -41,6 +42,13 @@ test('only steers that carry this session\'s code are read from the inbox', () =
     '',
   ].join('\n')
   expect(parseInbox(inbox, 'abc')).toEqual([{ text: 'Add the missing tests', remember: true }])
+})
+
+// ---------- which turns are recorded ----------
+
+test('prompts from the person count as turns; notifications and other sessions are system messages', () => {
+  for (const origin of ['composer', 'sdk', 'bridge', 'plugin', 'scheduled-trigger', 'unknown']) expect(isSystemOrigin(origin)).toBe(false)
+  for (const origin of ['task-notification', 'peer', 'peer-send-message', 'projects-relay', 'channel', 'observer', 'unclassified', 'meta']) expect(isSystemOrigin(origin)).toBe(true)
 })
 
 // ---------- principles ----------
@@ -209,7 +217,7 @@ const NO_GIT = { exitCode: 128, stdout: '', stderr: 'not a git repository', isSt
 
 /**
  * Answers the engine calls Rearview makes, standing in for a project with no git and no saved data
- * (`grepOutput`, when given, is what `git grep` prints).
+ * (`grepOutput`, when given, is what `git grep` prints), open in the desktop app unless `surfaces` says otherwise.
  * Returns the mocked clock, which only moves when the test advances it, and every file path read.
  */
 function standInEngine(
@@ -217,6 +225,7 @@ function standInEngine(
   files: Record<string, string>,
   reviewReply = CANNED_REVIEW,
   grepOutput?: string,
+  surfaces: string[] = ['desktop'],
 ) {
   mock.store(on)
   const clock = mock.clock(on)
@@ -224,7 +233,7 @@ function standInEngine(
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.root', () => ({ value: '/project' }))
-  on('session.surfaces', () => ({ value: [] }))
+  on('session.surfaces', () => ({ value: surfaces }))
   on('ui.toast', () => ({ value: undefined }))
   on('process.run', (_, e) => ({
     value: grepOutput !== undefined && e.argv[1] === 'grep' ? { ...NO_GIT, exitCode: 0, stdout: grepOutput } : NO_GIT,
@@ -472,4 +481,54 @@ test('turns are shared with Obsidian, and a steer from there reaches Claude only
   await clock.advance(2000)
   expect(sent).toEqual(['A correction from the Rearview review in Obsidian: Add the missing tests'])
   expect(files['/project/.claude/rearview/inbox.jsonl']).toBe('')
+})
+
+test('a system message that changes nothing is not recorded; one that edits a file is, marked with its origin', async ($, on) => {
+  const files: Record<string, string> = {}
+  const { clock } = standInEngine(on, files)
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('tool.call', () => {
+    files['/project/src/a.ts'] = 'x\n'
+    return { result: {} }
+  })
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: 'done' }))
+  await $.session.start({ cwd: '/project', surface: 'desktop', isInteractive: true })
+
+  await $.prompt.submit({ text: '<task-notification>sleep finished</task-notification>', origin: { kind: 'task-notification' }, wait: false })
+  await $.turn.start({ text: '<task-notification>sleep finished</task-notification>', turnId: 't1' })
+  await $.turn.complete({ answer: 'Noted.', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+
+  await $.prompt.submit({ text: 'CI failed', origin: { kind: 'task-notification' }, wait: false })
+  await $.turn.start({ text: 'CI failed', turnId: 't2' })
+  await $.tool.call(write('/project/src/a.ts', 'x\n'))
+  await $.turn.complete({ answer: 'Fixed.', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' })
+
+  await $.prompt.submit({ text: 'Add a toggle', origin: { kind: 'composer' }, wait: false })
+  await $.turn.start({ text: 'Add a toggle', turnId: 't3' })
+  await $.turn.complete({ answer: 'Nothing to do.', durationMs: 1, isAborted: false, turnId: 't3', reason: 'answer' })
+  await clock.advance(2000)
+
+  const shared = JSON.parse(files['/project/.claude/rearview/turns.json']!)
+  expect(shared.turns.map((t: { request: string; origin?: string }) => [t.request, t.origin ?? 'person'])).toEqual([
+    ['CI failed', 'task-notification'],
+    ['Add a toggle', 'person'],
+  ])
+})
+
+test('a session nothing draws (claude -p, a script) records no turns', async ($, on) => {
+  const files: Record<string, string> = {}
+  const { clock } = standInEngine(on, files, CANNED_REVIEW, undefined, [])
+  on('tool.call', () => {
+    files['/project/src/a.ts'] = 'x\n'
+    return { result: {} }
+  })
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: 'done' }))
+  await $.session.start({ cwd: '/project', surface: null, isInteractive: false })
+  await $.turn.start({ text: 'Reply with just: OK', turnId: 't1' })
+  await $.tool.call(write('/project/src/a.ts', 'x\n'))
+  await $.turn.complete({ answer: 'OK', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(2000)
+  expect(JSON.parse(files['/project/.claude/rearview/turns.json']!).turns).toEqual([])
 })

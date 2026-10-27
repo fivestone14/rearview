@@ -854,6 +854,8 @@ class TurnView extends ItemView {
     const card = el.createDiv({ cls: 'rv-card' })
     const cardHead = card.createDiv({ cls: 'rv-card-hd' })
     sectionTitle(cardHead, turn.isGit ? (turn.sha ? 'Commit message' : 'Working tree') : 'Your request')
+    // Rearview keeps a system message's turn only when it changed files, and says where it came from.
+    if (turn.origin) chip(cardHead, `from ${turn.origin.replace(/-/g, ' ')}`, 'purple')
     const s = score(turn)
     chip(cardHead, s.label, s.tone)
     card.createEl('p', { cls: 'rv-request', text: turn.request })

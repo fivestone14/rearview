@@ -26,8 +26,17 @@ const MAX_SHELL_FILES = 50
 /** Importers are searched for at most this many changed files per turn, so a huge change cannot stall the end of a turn. */
 const MAX_FILES_TRACED_FOR_IMPORTERS = 10
 const MAX_AGENT_TEXT_CHARS = 12_000
+/**
+ * Prompt origins that are the person's own request, typed or sent on their behalf. Every other origin
+ * (a task notification, another session's message, a relay, an idle notice) is a system message.
+ */
+const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk', 'slack-ping', 'plugin', 'auto-continuation', 'scheduled-trigger', 'unknown'])
 
-export async function startTurn($: EngineInterface, request: string): Promise<void> {
+export function isSystemOrigin(origin: string): boolean {
+  return !PERSON_ORIGINS.has(origin)
+}
+
+export async function startTurn($: EngineInterface, request: string, origin: string): Promise<void> {
   const turn: ActiveTurn = {
     id: crypto.randomUUID(),
     request,
@@ -37,6 +46,7 @@ export async function startTurn($: EngineInterface, request: string): Promise<vo
     gitBase: await gitSnapshot($),
     untrackedBefore: await untrackedFiles($),
     messageCount: (await $.session.messages()).length,
+    origin,
   }
   await updateActiveTurn($, () => turn)
 }
@@ -86,12 +96,16 @@ export async function finishTurn($: EngineInterface, answer: string, endReason: 
   try {
     const files = [...(await changedByTools($, active)), ...active.secretFiles.map(secretFile)]
     files.push(...(await changedByShell($, active, new Set([...files.map(f => f.path), ...Object.keys(active.before)]))))
+    // A system message that changed nothing is noise; one that changed files is kept, so no edit escapes review.
+    const isSystem = isSystemOrigin(active.origin)
+    if (isSystem && files.length === 0) return
     const turn: Turn = {
       id: active.id,
       request: active.request,
       answer,
       agentMessages: await agentTextSince($, active.messageCount),
       endReason,
+      ...(isSystem ? { origin: active.origin } : {}),
       finishedAt: Date.now(),
       filesRead: active.filesRead,
       files,

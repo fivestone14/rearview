@@ -66,6 +66,8 @@ export type Turn = {
   agentMessages: string
   /** How the turn ended: Claude answered, the person interrupted it, the model refused, or an error stopped it. */
   endReason: 'answer' | 'aborted' | 'refusal' | 'error'
+  /** Where the prompt came from, when it was not the person (a task notification, another session). Absent for the person's own. */
+  origin?: string
   finishedAt: number
   filesRead: string[]
   files: ChangedFile[]
@@ -89,6 +91,8 @@ export type ActiveTurn = {
   untrackedBefore: string[]
   /** How many conversation rows existed when the turn started, so the turn's own messages can be picked out. */
   messageCount: number
+  /** Where the turn's prompt came from, as prompt.submit named it (`composer`, `task-notification`, ...); `unknown` when unseen. */
+  origin: string
 }
 
 /** Which models Rearview calls, from the plugin's settings. */

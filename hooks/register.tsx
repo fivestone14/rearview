@@ -24,6 +24,12 @@ import type { Models } from '../types'
 const REVIEW_POLL_MS = 2000
 
 /**
+ * Where the prompt that starts the next turn came from. turn.start does not say, so prompt.submit
+ * notes it; a reload of the plugin forgets it, and the next turn then counts as the person's.
+ */
+let nextTurnOrigin: string | null = null
+
+/**
  * Whether a prompt is the person's own typing and can be held and resent whole.
  * Prompts from plugins (Rearview's own resends), tasks and other sessions pass straight through,
  * and so do prompts with attachments or @file mentions, which a resend could not carry.
@@ -84,6 +90,8 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    // A prompt delivered into a running turn starts no turn of its own.
+    if (e.turnId === undefined) nextTurnOrigin = e.isMeta ? 'meta' : e.origin.kind
     if (!isHoldablePrompt(e)) return next(e)
     await setDrift($, null) // a new prompt replaces any question still waiting
     const principles = await loadPrinciples($) // picks up edits made to principles.md since the last prompt
@@ -95,8 +103,12 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e)) // If the check itself fails, the prompt goes through.
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined && e.text !== '') {
-      await startTurn($, e.text).catch(error => $.ui.log(`Rearview could not start recording: ${String(error)}`))
+    const origin = nextTurnOrigin ?? 'unknown'
+    nextTurnOrigin = null
+    // A session nothing draws (claude -p, a script, CI) has no person watching it: its turns are not recorded.
+    const isWatched = (await $.session.surfaces()).length > 0
+    if (e.agentId === undefined && e.text !== '' && isWatched) {
+      await startTurn($, e.text, origin).catch(error => $.ui.log(`Rearview could not start recording: ${String(error)}`))
       await startBridge($).catch(error => $.ui.log(`Rearview could not start the Obsidian bridge: ${String(error)}`))
     }
     return next(e)
