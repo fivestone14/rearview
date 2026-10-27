@@ -82,14 +82,15 @@ export function parsePrinciples(markdown: string): Principle[] {
     .filter(principle => principle.id !== '' && principle.rule !== '')
 }
 
+/** Each value is written on one line, so a rule with line breaks can never add a section or field of its own. */
 export function formatPrinciples(list: Principle[]): string {
   const sections = list.map(p =>
     [
-      `## ${p.id}`,
-      `- rule: ${p.rule}`,
-      `- scope: ${p.scope}`,
+      `## ${singleLine(p.id)}`,
+      `- rule: ${singleLine(p.rule)}`,
+      `- scope: ${singleLine(p.scope)}`,
       `- enforce: ${p.enforce}`,
-      `- files: ${p.files}`,
+      `- files: ${singleLine(p.files)}`,
       `- status: ${p.status}`,
       `- signals: ${p.signals}`,
     ].join('\n'),
@@ -107,7 +108,15 @@ export function principlesPromptSection(list: Principle[]): string | null {
 
 /** A rule as one short line of plain text: control characters removed, at most 300 characters. */
 function oneLine(text: string): string {
-  return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+  return singleLine(text).replace(/\s+/g, ' ').slice(0, 300)
+}
+
+/**
+ * Text with every line break and control character turned into a space, and nothing else changed,
+ * so a saved value stays on its own line and a long rule written by hand is kept whole.
+ */
+function singleLine(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]+/g, ' ').trim()
 }
 
 /** The active blocking principle whose `files` glob matches `path`, if any. */
@@ -116,22 +125,51 @@ export function blockingPrinciple(list: Principle[], path: string): Principle | 
 }
 
 /**
- * `*` matches within a folder, `**` across folders. A pattern with no `/` also matches the file name alone.
- * Patterns longer than 200 characters or with more than four `**` match nothing, so a hand-written
- * pattern can never make matching slow.
+ * `*` matches within a folder name and `**` across folders, so `src/**.css` matches `src/a/b.css`.
+ * A whole `**` folder also matches no folder at all, so a pattern for CSS files anywhere under `src`
+ * also matches `src/a.css`. A pattern with no `/` also matches the file name alone.
+ * Matching takes at most pattern length x path length steps (no regex), so a hand-written pattern can never make it slow.
  */
 export function matchesGlob(pattern: string, path: string): boolean {
-  if (pattern.length > 200 || pattern.split('**').length - 1 > 4) return false
-  const regex = new RegExp(
-    '^' +
-      pattern
-        .split('**')
-        .map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*'))
-        .join('.*') +
-      '$',
-  )
+  const tokens = globTokens(pattern)
   const name = path.split('/').pop() ?? path
-  return regex.test(path) || (!pattern.includes('/') && regex.test(name))
+  return matchesTokens(tokens, path) || (!pattern.includes('/') && matchesTokens(tokens, name))
+}
+
+/** One entry per pattern character, except that `*`, `**`, and a whole `**` folder with its slash are one entry each. */
+function globTokens(pattern: string): string[] {
+  const tokens: string[] = []
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern.startsWith('**', i)) {
+      const isFolder = (i === 0 || pattern[i - 1] === '/') && pattern[i + 2] === '/'
+      tokens.push(isFolder ? '**/' : '**')
+      i += isFolder ? 2 : 1
+    } else {
+      tokens.push(pattern[i]!)
+    }
+  }
+  return tokens
+}
+
+/** Tracks which lengths of `path` the tokens so far can match, one token at a time. */
+function matchesTokens(tokens: string[], path: string): boolean {
+  let reached = new Array<boolean>(path.length + 1).fill(false)
+  reached[0] = true
+  for (const token of tokens) {
+    const next = new Array<boolean>(path.length + 1).fill(false)
+    let isShorterReached = false
+    for (let j = 0; j <= path.length; j++) {
+      const previous = path[j - 1]
+      if (token === '*') next[j] = reached[j]! || (j > 0 && next[j - 1]! && previous !== '/')
+      else if (token === '**') next[j] = reached[j]! || (j > 0 && next[j - 1]!)
+      // Nothing, or anything that ends at a folder boundary.
+      else if (token === '**/') next[j] = reached[j]! || (isShorterReached && previous === '/')
+      else next[j] = j > 0 && reached[j - 1]! && previous === token
+      isShorterReached ||= reached[j]!
+    }
+    reached = next
+  }
+  return reached[path.length]!
 }
 
 /** A short id for a new principle, made from its rule: "Always add tests" -> "always-add-tests". */
@@ -219,7 +257,8 @@ export async function suggestRule(
   })
   if (!reply.isAnswered) return null
   const json = parseJsonObject(reply.text)
-  const rule = typeof json?.rule === 'string' ? json.rule.trim() : ''
+  // One line, so the rule shown for approval is exactly the rule that is saved.
+  const rule = typeof json?.rule === 'string' ? oneLine(json.rule) : ''
   return rule === '' ? null : { rule, steers: typeof json?.count === 'number' ? json.count : 2 }
 }
 

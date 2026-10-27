@@ -348,7 +348,7 @@ async function drawPrinciples($: EngineInterface, elements: Elements) {
         <Box flexDirection="column">
           <Text strikethrough={p.status === 'retired'}>{p.rule}</Text>
           <Text dimColor>
-            {p.enforce} · applies: {p.scope} · {p.signals} signals · {p.status}
+            {p.enforce} · applies: {p.scope}{p.files !== '' ? ` · files: ${p.files}` : ''} · {p.signals} signals · {p.status}
           </Text>
           {p.status === 'active' && <Button key={`retire-${p.id}`} label="Retire" onPress={() => retirePrinciple($, p.id)} />}
         </Box>

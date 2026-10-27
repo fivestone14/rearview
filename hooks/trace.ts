@@ -2,7 +2,7 @@
 
 import type { EngineInterface } from 'claude-code'
 
-import { readProjectFile, runInProject } from './paths'
+import { looksLikeSecretFile, readProjectFile, runInProject } from './paths'
 import type { TraceHit, TraceResult } from '../types'
 
 /** Trace shows at most this many lines. */
@@ -40,8 +40,9 @@ export async function findImporters($: EngineInterface, file: string): Promise<s
   return [...new Set(importers)]
 }
 
-/** Project files that `file` imports (relative imports only, returned without extension). */
+/** Project files that `file` imports (relative imports only, returned without extension). A secrets file is never read. */
 export async function findImports($: EngineInterface, file: string): Promise<string[]> {
+  if (looksLikeSecretFile(file)) return []
   const specs = parseImports((await readProjectFile($, file)) ?? '')
   return [...new Set(specs.map(spec => resolveImport(file, spec)).filter((path): path is string => path !== null))]
 }
@@ -98,7 +99,10 @@ function fileStem(path: string): string {
   return name
 }
 
-/** Runs `git grep -n -w` (untracked files included), or plain grep when the project is not a git repository. */
+/**
+ * Runs `git grep -n -w` (untracked files included), or plain grep when the project is not a git repository.
+ * Lines from secret-looking files are dropped, so their contents are never shown.
+ */
 async function grepWord($: EngineInterface, word: string): Promise<TraceHit[]> {
   let run = await runInProject($, ['git', 'grep', '--untracked', '-n', '-w', '-I', '-F', '--', word])
   if (run.exitCode === 128) {
@@ -111,7 +115,7 @@ async function grepWord($: EngineInterface, word: string): Promise<TraceHit[]> {
   return run.stdout
     .split('\n')
     .map(parseGrepLine)
-    .filter((hit): hit is TraceHit => hit !== null)
+    .filter((hit): hit is TraceHit => hit !== null && !looksLikeSecretFile(hit.file))
 }
 
 /** `src/a.ts:12:const x = 1` -> { file, line, text } */
