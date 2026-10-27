@@ -7,6 +7,7 @@
 
 import type { EngineInterface } from 'claude-code'
 
+import { exportTurns } from './bridge'
 import { unifiedDiff } from './diff'
 import { looksLikeSecretFile, projectPath, projectStoreKey, readProjectFile, runInProject } from './paths'
 import { getActiveTurn, getTurns, updateActiveTurn, updateTurns } from './state'
@@ -225,9 +226,11 @@ async function turnsStoreKey($: EngineInterface): Promise<string> {
   return projectStoreKey($, 'turns:v1')
 }
 
-/** Keeps finished turns across sessions, per project. */
+/** Keeps finished turns across sessions, per project, and shares them with the Obsidian view. */
 export async function saveTurns($: EngineInterface): Promise<void> {
-  await $.store.set(await turnsStoreKey($), await getTurns($))
+  const turns = await getTurns($)
+  await $.store.set(await turnsStoreKey($), turns)
+  await exportTurns($, turns)
 }
 
 export async function loadTurns($: EngineInterface): Promise<void> {

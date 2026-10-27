@@ -1,6 +1,6 @@
 // Rearview's entry point: connects Claude Code's events to the parts that handle them.
 //
-//   session.start  -> load saved turns and principles, add /rearview, start the reviewer
+//   session.start  -> load saved turns and principles, add /rearview, start the reviewer and the Obsidian bridge
 //   session.attach -> open the pane when a desktop or VS Code window attaches
 //   prompt.submit  -> drift check: hold a prompt that goes against a principle
 //   turn.start     -> start recording a turn
@@ -11,11 +11,12 @@
 
 import type { EngineInterface, PromptSubmitInput, Register } from 'claude-code'
 
+import { exportTurns, startBridge } from './bridge'
 import { drawDriftBand, drawPane, PANE_ID } from './pane'
 import { projectPath } from './paths'
 import { blockingPrinciple, findDrift, loadPrinciples, principlesPromptSection, usablePrinciples } from './principles'
 import { reviewNextPendingTurn } from './review'
-import { getPrinciples, setDrift, setPrinciples, updateActiveTurn } from './state'
+import { getPrinciples, getTurns, setDrift, setPrinciples, updateActiveTurn } from './state'
 import { editedPath, finishTurn, loadTurns, noteToolCall, startTurn } from './turn'
 import type { Models } from '../types'
 
@@ -58,6 +59,12 @@ export const register: Register = (on, options) => {
     } catch (error) {
       $.ui.log(`Rearview could not load saved turns or principles: ${String(error)}`)
     }
+    try {
+      await exportTurns($, await getTurns($))
+      await startBridge($)
+    } catch (error) {
+      $.ui.log(`Rearview could not start the Obsidian bridge: ${String(error)}`)
+    }
     // A window that attached before Rearview loaded raises no session.attach, so check now too.
     const surfaces = await $.session.surfaces()
     if (surfaces.includes('desktop') || surfaces.includes('vscode')) void openPane($)
@@ -90,6 +97,7 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined && e.text !== '') {
       await startTurn($, e.text).catch(error => $.ui.log(`Rearview could not start recording: ${String(error)}`))
+      await startBridge($).catch(error => $.ui.log(`Rearview could not start the Obsidian bridge: ${String(error)}`))
     }
     return next(e)
   })
