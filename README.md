@@ -106,11 +106,13 @@ Installing a plugin runs its code in every session, so read the code first; it i
 
 ## Obsidian
 
-`obsidian/` is a desktop Obsidian plugin that shows the same reviews in a full-size layout: turns in the left sidebar, the turn in a tab (*Code*, *Check work*, *Reasoning*), and its files, Trace and a steer box in the right sidebar. It follows `.claude/rearview/turns.json` in each project you connect, so a new turn appears as soon as Claude finishes it.
+`obsidian/` is a desktop Obsidian plugin that shows the same reviews in a full-size layout: projects and their turns in the left sidebar, the turn in a tab (*Code*, *Map*, *Check work*, *Reasoning*), and its files, Trace and a steer box in the right sidebar. It follows `.claude/rearview/turns.json` in each project you add, so a new turn appears as soon as Claude finishes it.
+
+Each project is also followed through Git. **Add project folder** first checks the connection step by step (the folder, Git, the repository, branch and last commit, the remote and whether GitHub answers, ahead and behind) and adds the folder only when it is in a Git repository. The project's **Git** section then lists its uncommitted changes, refreshed every few seconds, and its recent commits; open one to see its diff and Map like a turn. Git changes are not reviewed, and secret-looking files show their name only.
 
 1. Copy `obsidian/main.js`, `manifest.json` and `styles.css` to `<your vault>/.obsidian/plugins/rearview/`.
-2. In Obsidian, turn on Rearview under **Settings › Community plugins**, then add your project folders in its settings.
-3. Click the eye in the ribbon, or run **Rearview: Open the latest turn**.
+2. In Obsidian, turn on Rearview under **Settings › Community plugins**.
+3. Click the eye in the ribbon, then **Add project folder**, or run **Rearview: Add a project folder**.
 
 **Send to Claude** in Obsidian reaches the Claude Code session open in that project within a few seconds, as your next message there.
 

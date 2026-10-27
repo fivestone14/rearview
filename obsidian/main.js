@@ -8,7 +8,7 @@
 // Desktop only: project folders sit outside the vault, so they are read with Node's fs,
 // and Trace runs git grep (an argument list, never a shell) in the project.
 
-const { ItemView, Notice, Plugin, PluginSettingTab, Setting } = require('obsidian')
+const { ItemView, Modal, Notice, Plugin, PluginSettingTab, Setting } = require('obsidian')
 const fs = require('fs')
 const path = require('path')
 const { execFile } = require('child_process')
@@ -67,6 +67,7 @@ function parseDiff(diff) {
 function score(turn) {
   const review = turn.review || {}
   if (review.state === 'pending') return { label: 'reviewing', tone: 'muted' }
+  if (turn.isGit) return { label: turn.files ? `${turn.files.length} files` : 'commit', tone: 'muted' }
   if (review.state === 'failed') return { label: 'review failed', tone: 'red' }
   if (review.state !== 'done') return { label: turn.files.length ? 'not reviewed' : 'no edits', tone: 'muted' }
   const reqs = review.result.requirements
@@ -86,6 +87,174 @@ function titleOf(request) {
 function parseGrepLine(line) {
   const match = line.match(/^(?:\.\/)?([^:]+):(\d+):(.*)$/)
   return match ? { file: match[1], line: Number(match[2]), text: match[3].trim() } : null
+}
+
+// ---------- Git: checking the connection, and the changes it tracks ----------
+
+/** How often each project's Git status is checked for new changes. */
+const GIT_POLL_MS = 4000
+/** The Git section lists this many recent commits. */
+const MAX_COMMITS = 15
+/** At most this many untracked files are shown as new files. */
+const MAX_UNTRACKED = 50
+
+/** Runs git with an argument list (never a shell); always resolves { code, stdout, stderr }. */
+function runGit(cwd, args, timeout = 15000) {
+  return new Promise(resolve => {
+    execFile('git', args, { cwd, timeout, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const code = error ? (typeof error.code === 'number' ? error.code : -1) : 0
+      resolve({ code, stdout: String(stdout || ''), stderr: String(stderr || (error && error.message) || '') })
+    })
+  })
+}
+
+/** `https://github.com/me/app.git` or `git@github.com:me/app.git` -> `me/app`; other hosts give null. */
+function githubRepo(url) {
+  const match = url.match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/)
+  return match ? match[1] : null
+}
+
+/**
+ * Checks that a folder can be followed through Git, step by step, the way the import shows it.
+ * Each step is ok, warn (works, with less) or fail (cannot be imported). `root` is the repository's top folder.
+ */
+async function checkGitConnection(folder) {
+  const steps = []
+  const add = (label, status, detail) => steps.push({ label, status, detail })
+  const result = { steps, root: null, branch: null, isOk: false }
+  try {
+    if (!(await fs.promises.stat(folder)).isDirectory()) throw new Error('not a folder')
+    add('Folder', 'ok', folder)
+  } catch {
+    add('Folder', 'fail', 'There is no folder at this path.')
+    return result
+  }
+  const version = await runGit(folder, ['--version'])
+  if (version.code !== 0) {
+    add('Git installed', 'fail', 'git could not be run. Install Git, then try again.')
+    return result
+  }
+  add('Git installed', 'ok', version.stdout.trim())
+  const top = await runGit(folder, ['rev-parse', '--show-toplevel'])
+  if (top.code !== 0) {
+    add('Git repository', 'fail', 'This folder is not inside a Git repository. Run git init there first.')
+    return result
+  }
+  result.root = top.stdout.trim()
+  add('Git repository', 'ok', result.root)
+  const branch = (await runGit(result.root, ['branch', '--show-current'])).stdout.trim()
+  const last = await runGit(result.root, ['log', '-1', '--format=%h %s'])
+  result.branch = branch || 'detached HEAD'
+  add('Branch and last commit', 'ok', last.code === 0 ? `${result.branch} · ${last.stdout.trim()}` : `${result.branch} · no commits yet`)
+  result.isOk = true
+
+  const remote = await runGit(result.root, ['remote', 'get-url', 'origin'])
+  if (remote.code !== 0) {
+    add('Remote', 'warn', 'No remote named origin: changes are followed on this computer only.')
+    return result
+  }
+  const url = remote.stdout.trim()
+  const repo = githubRepo(url)
+  add('Remote', 'ok', repo ? `GitHub · ${repo}` : url)
+  const reach = await runGit(result.root, ['ls-remote', '--heads', 'origin'], 20000)
+  add(repo ? 'GitHub reachable' : 'Remote reachable', reach.code === 0 ? 'ok' : 'warn', reach.code === 0 ? `${reach.stdout.trim().split('\n').filter(Boolean).length} branches seen` : 'Could not reach it (offline, or not signed in). Local changes still work.')
+  const counts = await runGit(result.root, ['rev-list', '--left-right', '--count', '@{upstream}...HEAD'])
+  if (counts.code === 0) {
+    const [behind, ahead] = counts.stdout.trim().split(/\s+/).map(Number)
+    add('In step with the remote', 'ok', `${ahead} ahead, ${behind} behind`)
+  } else {
+    add('In step with the remote', 'warn', 'This branch has no upstream yet, so ahead and behind are unknown.')
+  }
+  return result
+}
+
+/** `git diff` / `git show` output as Rearview's changed files; secret-looking files keep their name only. */
+function parseGitPatch(patch) {
+  const files = []
+  let file = null
+  for (const line of patch.split('\n')) {
+    const header = line.match(/^diff --git a\/(.+) b\/(.+)$/)
+    if (header) {
+      file = { path: header[2], change: 'edited', lines: [], added: 0, removed: 0, inHunks: false }
+      files.push(file)
+      continue
+    }
+    if (!file) continue
+    if (!file.inHunks) {
+      if (line.startsWith('new file mode')) file.change = 'new'
+      else if (line.startsWith('deleted file mode')) file.change = 'deleted'
+      else if (line.startsWith('+++ b/')) file.path = line.slice(6)
+      else if (line.startsWith('rename to ')) file.path = line.slice(10)
+    }
+    if (line.startsWith('@@')) file.inHunks = true
+    if (!file.inHunks) continue
+    file.lines.push(line)
+    if (line.startsWith('+')) file.added++
+    else if (line.startsWith('-')) file.removed++
+  }
+  return files.map(f => {
+    const isSecret = SECRET_FILE.test(f.path)
+    const changed = { path: f.path, change: f.change, diff: isSecret ? '' : f.lines.join('\n'), added: f.added, removed: f.removed }
+    return isSecret ? { ...changed, isSecret: true } : changed
+  })
+}
+
+/** An untracked file as a new file with an all-added diff; secrets, binary and large files keep their name only. */
+async function untrackedFile(root, file) {
+  const changed = { path: file, change: 'new', diff: '', added: 0, removed: 0 }
+  if (SECRET_FILE.test(file)) return { ...changed, isSecret: true }
+  try {
+    const absolute = path.join(root, file)
+    if ((await fs.promises.stat(absolute)).size > MAX_MAP_FILE_BYTES) return changed
+    const text = await fs.promises.readFile(absolute, 'utf8')
+    if (text.includes('\0')) return changed
+    const lines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n')
+    return { ...changed, diff: `@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}`, added: lines.length }
+  } catch {
+    return changed
+  }
+}
+
+const GIT_NOT_REVIEWED = { state: 'skipped', reason: 'Git changes are not reviewed: Rearview reviews the turns Claude takes. The Code and Map tabs still show them.' }
+
+/** Uncommitted changes against HEAD, untracked files included, shaped like a turn so the same views draw them. */
+async function loadWorkingTree(root) {
+  const diff = await runGit(root, ['diff', 'HEAD', '-M', '--no-color', '--no-ext-diff'])
+  const files = diff.code === 0 ? parseGitPatch(diff.stdout) : []
+  const untracked = await runGit(root, ['ls-files', '--others', '--exclude-standard'])
+  for (const file of untracked.stdout.split('\n').filter(Boolean).slice(0, MAX_UNTRACKED)) files.push(await untrackedFile(root, file))
+  return { id: 'git:worktree', isGit: true, request: 'Uncommitted changes', answer: '', finishedAt: Date.now(), files, affected: [], filesRead: [], review: GIT_NOT_REVIEWED }
+}
+
+/** Recent commits as turns whose files load when first shown (a commit never changes, so once is enough). */
+async function loadCommits(root) {
+  const log = await runGit(root, ['log', `-n${MAX_COMMITS}`, '--format=%H%x1f%h%x1f%ct%x1f%s%x1f%b%x1e'])
+  if (log.code !== 0) return []
+  return log.stdout
+    .split('\x1e')
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .map(entry => {
+      const [sha, short, time, subject, body] = entry.split('\x1f')
+      return { id: `git:${sha}`, isGit: true, sha, short, request: body && body.trim() ? `${subject}\n\n${body.trim()}` : subject, answer: '', finishedAt: Number(time) * 1000, files: null, affected: [], filesRead: [], review: GIT_NOT_REVIEWED }
+    })
+}
+
+async function loadCommitFiles(root, sha) {
+  const show = await runGit(root, ['show', '--format=', '-M', '--no-color', '--no-ext-diff', sha])
+  return show.code === 0 ? parseGitPatch(show.stdout) : []
+}
+
+/** Opens the system folder picker where Obsidian allows it; undefined when it cannot. */
+function pickFolder() {
+  try {
+    const electron = require('electron')
+    const remote = electron.remote || require('@electron/remote')
+    const picked = remote.dialog.showOpenDialogSync({ properties: ['openDirectory'] })
+    return picked && picked[0] ? picked[0] : null
+  } catch {
+    return undefined
+  }
 }
 
 // ---------- the Map: which files use which (the same import rules as hooks/trace.ts) ----------
@@ -209,6 +378,11 @@ class RearviewPlugin extends Plugin {
     this.watched = []
     /** turn id -> its Map, built once since it reads files */
     this.mapCache = new Map()
+    this.gitTimers = []
+    /** Projects whose Git status is being read right now. */
+    this.gitBusy = new Set()
+    /** commit sha -> its changed files */
+    this.commitFiles = new Map()
 
     this.registerView(TURNS_VIEW, leaf => new TurnsView(leaf, this))
     this.registerView(TURN_VIEW, leaf => new TurnView(leaf, this))
@@ -216,6 +390,7 @@ class RearviewPlugin extends Plugin {
     this.addRibbonIcon('eye', 'Open Rearview', () => this.openAll())
     this.addCommand({ id: 'open', name: 'Open Rearview', callback: () => this.openAll() })
     this.addCommand({ id: 'open-latest-turn', name: 'Open the latest turn', callback: () => this.openLatest() })
+    this.addCommand({ id: 'add-project', name: 'Add a project folder', callback: () => new ProjectModal(this.app, this, null).open() })
     this.statusEl = this.addStatusBarItem()
     this.addSettingTab(new RearviewSettingTab(this.app, this))
     this.app.workspace.onLayoutReady(() => this.watchProjects())
@@ -238,8 +413,10 @@ class RearviewPlugin extends Plugin {
       const listener = () => this.loadProject(root, true)
       fs.watchFile(file, { interval: WATCH_MS }, listener)
       this.watched.push({ file, listener })
-      this.projects.set(root, { root, turns: [], error: 'Loading…' })
+      this.projects.set(root, { root, turns: [], error: 'Loading…', git: null })
       this.loadProject(root, false)
+      this.pollGit(root)
+      this.gitTimers.push(window.setInterval(() => this.pollGit(root), GIT_POLL_MS))
     }
     this.refresh()
   }
@@ -247,6 +424,66 @@ class RearviewPlugin extends Plugin {
   unwatch() {
     for (const { file, listener } of this.watched) fs.unwatchFile(file, listener)
     this.watched = []
+    for (const timer of this.gitTimers) window.clearInterval(timer)
+    this.gitTimers = []
+  }
+
+  /** Re-reads a project's Git changes when `git status` or HEAD has moved since the last look. */
+  async pollGit(root) {
+    if (this.gitBusy.has(root) || !this.projects.has(root)) return
+    this.gitBusy.add(root)
+    // loadProject replaces a project's object, so results go to whichever object is current when they arrive.
+    const setGit = git => {
+      const project = this.projects.get(root)
+      if (project) project.git = git
+    }
+    try {
+      const head = await runGit(root, ['rev-parse', 'HEAD'])
+      if (head.code !== 0 && head.code !== 128) return
+      const isRepo = (await runGit(root, ['rev-parse', '--is-inside-work-tree'])).code === 0
+      if (!isRepo) {
+        setGit({ isRepo: false })
+        return this.refresh([TURNS_VIEW])
+      }
+      const status = await runGit(root, ['status', '--porcelain=v1'])
+      // `git status` reads the same for a second edit to a changed file, so each changed file's mtime counts too.
+      const stamps = await Promise.all(
+        status.stdout
+          .split('\n')
+          .filter(Boolean)
+          .map(line => line.slice(3).split(' -> ').pop())
+          .map(file => fs.promises.stat(path.join(root, file)).then(s => s.mtimeMs, () => 0)),
+      )
+      const signature = `${head.stdout}|${status.stdout}|${stamps.join(',')}`
+      const before = this.projects.get(root).git
+      if (before && before.signature === signature) return
+      const branch = (await runGit(root, ['branch', '--show-current'])).stdout.trim() || 'detached HEAD'
+      const commits = before && before.head === head.stdout ? before.commits : await loadCommits(root)
+      for (const commit of commits) if (this.commitFiles.has(commit.sha)) commit.files = this.commitFiles.get(commit.sha)
+      setGit({ isRepo: true, signature, head: head.stdout, branch, worktree: await loadWorkingTree(root), commits })
+      this.mapCache.delete('git:worktree')
+      const shown = this.current()
+      this.refresh(shown && shown.turn.isGit ? undefined : [TURNS_VIEW])
+    } finally {
+      this.gitBusy.delete(root)
+    }
+  }
+
+  /** Loads a commit's files the first time it is shown. */
+  async ensureCommitFiles(root, commit) {
+    if (commit.files || commit.loading) return
+    commit.loading = true
+    commit.files = await loadCommitFiles(root, commit.sha)
+    this.commitFiles.set(commit.sha, commit.files)
+    commit.loading = false
+    this.refresh([TURN_VIEW, SIDE_VIEW])
+  }
+
+  async addProject(root) {
+    if (!this.settings.projects.includes(root)) this.settings.projects.push(root)
+    await this.saveSettings()
+    new Notice(`Rearview: following ${path.basename(root)}.`)
+    await this.openAll()
   }
 
   async loadProject(root, isUpdate) {
@@ -254,10 +491,10 @@ class RearviewPlugin extends Plugin {
     let project
     try {
       const data = JSON.parse(await fs.promises.readFile(path.join(root, DATA_DIR, 'turns.json'), 'utf8'))
-      project = { root, turns: Array.isArray(data.turns) ? data.turns : [], error: null }
+      project = { ...before, root, turns: Array.isArray(data.turns) ? data.turns : [], error: null }
     } catch (error) {
-      const reason = error.code === 'ENOENT' ? 'No turns yet. Rearview writes them when a Claude Code session starts here.' : `Could not read turns.json: ${error.message}`
-      project = { root, turns: [], error: reason }
+      const reason = error.code === 'ENOENT' ? 'No Claude Code turns yet. Rearview writes them when a session starts in this project.' : `Could not read turns.json: ${error.message}`
+      project = { ...before, root, turns: [], error: reason }
     }
     this.projects.set(root, project)
     const latest = project.turns[project.turns.length - 1]
@@ -270,21 +507,35 @@ class RearviewPlugin extends Plugin {
     this.refresh()
   }
 
-  /** The turn on show: the selected one, else the newest across projects. */
+  /**
+   * What is on show: the selected turn or Git change, else the newest turn across projects,
+   * else a project's uncommitted changes. `label` names it ("Turn 4", "Commit a1b2c3d").
+   */
   current() {
+    const find = (project, id) => {
+      const index = project.turns.findIndex(t => t.id === id)
+      if (index >= 0) return { project, turn: project.turns[index], label: `Turn ${index + 1}` }
+      const git = project.git
+      if (!git || !git.isRepo) return null
+      if (git.worktree && git.worktree.id === id) return { project, turn: git.worktree, label: 'Uncommitted changes' }
+      const commit = git.commits.find(c => c.id === id)
+      return commit ? { project, turn: commit, label: `Commit ${commit.short}` } : null
+    }
     if (this.selected) {
       const project = this.projects.get(this.selected.root)
-      const index = project ? project.turns.findIndex(t => t.id === this.selected.turnId) : -1
-      if (index >= 0) return { project, turn: project.turns[index], number: index + 1 }
+      const found = project && find(project, this.selected.turnId)
+      if (found) return found
     }
     let best = null
     for (const project of this.projects.values()) {
-      const index = project.turns.length - 1
-      if (index >= 0 && (!best || project.turns[index].finishedAt > best.turn.finishedAt)) {
-        best = { project, turn: project.turns[index], number: index + 1 }
-      }
+      const last = project.turns[project.turns.length - 1]
+      if (last && (!best || last.finishedAt > best.turn.finishedAt)) best = find(project, last.id)
     }
-    return best
+    if (best) return best
+    for (const project of this.projects.values()) {
+      if (project.git && project.git.isRepo && project.git.worktree) return find(project, project.git.worktree.id)
+    }
+    return null
   }
 
   select(root, turnId) {
@@ -308,7 +559,7 @@ class RearviewPlugin extends Plugin {
       for (const leaf of this.app.workspace.getLeavesOfType(type)) if (typeof leaf.view.render === 'function') leaf.view.render()
     }
     const shown = this.current()
-    this.statusEl.setText(shown ? `Rearview · T${shown.number} ${score(shown.turn).label}` : 'Rearview · no turns yet')
+    this.statusEl.setText(shown ? `Rearview · ${shown.label} · ${score(shown.turn).label}` : 'Rearview · nothing to show yet')
   }
 
   async openAll() {
@@ -411,15 +662,12 @@ function counts(parent, added, removed) {
 
 function emptyState(el, plugin) {
   const box = el.createDiv({ cls: 'rv-empty' })
-  box.createEl('h3', { text: 'Connect a project' })
+  box.createEl('h3', { text: 'Add a project' })
   box.createEl('p', {
-    text: 'Add the folder of a project you use Claude Code in. Rearview writes each turn and its review to .claude/rearview/turns.json there, and this view follows it.',
+    text: 'Pick a project folder in a Git repository. Rearview checks the connection, then shows its changes and the turns Claude Code takes there.',
   })
-  const button = box.createEl('button', { cls: 'mod-cta', text: 'Open settings' })
-  button.addEventListener('click', () => {
-    plugin.app.setting.open()
-    plugin.app.setting.openTabById(plugin.manifest.id)
-  })
+  const button = box.createEl('button', { cls: 'mod-cta', text: 'Add project folder' })
+  button.addEventListener('click', () => new ProjectModal(plugin.app, plugin, null).open())
 }
 
 function sectionTitle(parent, text) {
@@ -450,27 +698,106 @@ class TurnsView extends ItemView {
     const el = this.contentEl
     el.empty()
     el.addClass('rv')
-    sectionTitle(el, 'Rearview · turns')
+    const top = el.createDiv({ cls: 'rv-card-hd' })
+    sectionTitle(top, 'Rearview · projects')
+    const add = top.createEl('button', { cls: 'rv-link rv-push', text: '+ Add project folder' })
+    add.addEventListener('click', () => new ProjectModal(this.app, this.plugin, null).open())
     if (this.plugin.settings.projects.length === 0) return emptyState(el, this.plugin)
     const shown = this.plugin.current()
+    const row = (parent, project, turn, id, title) => {
+      const isShown = shown && shown.turn.id === turn.id && shown.project.root === project.root
+      const button = parent.createEl('button', { cls: `rv-row${isShown ? ' is-active' : ''}` })
+      button.createEl('span', { cls: 'rv-id', text: id })
+      button.createEl('span', { cls: 'rv-row-title', text: title })
+      const s = score(turn)
+      chip(button, s.label, s.tone)
+      button.addEventListener('click', () => this.plugin.select(project.root, turn.id))
+    }
     for (const project of this.plugin.projects.values()) {
       const group = el.createDiv({ cls: 'rv-group' })
-      group.createDiv({ cls: 'rv-group-name', text: path.basename(project.root) })
-      if (project.turns.length === 0) {
-        group.createDiv({ cls: 'rv-muted rv-pad', text: project.error || 'No turns yet.' })
-        continue
-      }
-      for (let i = project.turns.length - 1; i >= 0; i--) {
-        const turn = project.turns[i]
-        const isShown = shown && shown.turn.id === turn.id
-        const row = group.createEl('button', { cls: `rv-row${isShown ? ' is-active' : ''}` })
-        row.createEl('span', { cls: 'rv-id', text: `T${i + 1}` })
-        row.createEl('span', { cls: 'rv-row-title', text: titleOf(turn.request) })
-        const s = score(turn)
-        chip(row, s.label, s.tone)
-        row.addEventListener('click', () => this.plugin.select(project.root, turn.id))
-      }
+      const head = group.createDiv({ cls: 'rv-group-head' })
+      head.createEl('span', { cls: 'rv-group-name', text: path.basename(project.root) })
+      const git = project.git
+      if (git && git.isRepo) chip(head, git.branch, 'blue')
+      else if (git) chip(head, 'not a Git repository', 'red')
+      const check = head.createEl('button', { cls: 'rv-link rv-push', text: 'Check connection' })
+      check.addEventListener('click', () => new ProjectModal(this.app, this.plugin, project.root).open())
+
+      group.createDiv({ cls: 'rv-subhead', text: 'Claude Code turns' })
+      if (project.turns.length === 0) group.createDiv({ cls: 'rv-muted rv-pad', text: project.error || 'No turns yet.' })
+      for (let i = project.turns.length - 1; i >= 0; i--) row(group, project, project.turns[i], `T${i + 1}`, titleOf(project.turns[i].request))
+
+      if (!git || !git.isRepo) continue
+      group.createDiv({ cls: 'rv-subhead', text: 'Git' })
+      if (git.worktree.files.length) row(group, project, git.worktree, 'now', 'Uncommitted changes')
+      else group.createDiv({ cls: 'rv-muted rv-pad', text: 'No uncommitted changes.' })
+      for (const commit of git.commits) row(group, project, commit, commit.short, titleOf(commit.request))
     }
+  }
+}
+
+// ---------- adding a project, and checking its Git connection ----------
+
+/** Adds a project folder (folder null) or re-checks one, showing each step of the Git connection check. */
+class ProjectModal extends Modal {
+  constructor(app, plugin, folder) {
+    super(app)
+    this.plugin = plugin
+    this.folder = folder
+  }
+
+  onOpen() {
+    const el = this.contentEl
+    el.addClass('rv')
+    this.titleEl.setText(this.folder ? 'Git connection' : 'Add a project folder')
+    if (this.folder) return this.check(this.folder)
+    el.createEl('p', { cls: 'rv-muted', text: 'Pick a project folder. Rearview checks that it can follow it through Git, then shows its uncommitted changes, its recent commits, and the turns Claude Code takes there.' })
+    const line = el.createDiv({ cls: 'rv-path-row' })
+    const input = line.createEl('input', { attr: { type: 'text', placeholder: '/Users/you/code/my-app', 'aria-label': 'Project folder' } })
+    const browse = line.createEl('button', { text: 'Browse…' })
+    browse.addEventListener('click', () => {
+      const picked = pickFolder()
+      if (picked === undefined) new Notice('The folder picker is not available here. Type or paste the path instead.')
+      else if (picked) input.value = picked
+    })
+    const go = el.createEl('button', { cls: 'mod-cta', text: 'Check connection' })
+    this.results = el.createDiv({ cls: 'rv-steps' })
+    go.addEventListener('click', () => {
+      const folder = input.value.trim().replace(/^~(?=\/)/, require('os').homedir())
+      if (folder === '') return new Notice('Choose a folder first.')
+      this.check(folder)
+    })
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') go.click()
+    })
+  }
+
+  async check(folder) {
+    if (!this.results) this.results = this.contentEl.createDiv({ cls: 'rv-steps' })
+    const box = this.results
+    box.empty()
+    box.createDiv({ cls: 'rv-muted', text: 'Checking…' })
+    const result = await checkGitConnection(folder)
+    box.empty()
+    const marks = { ok: '✓', warn: '!', fail: '✗' }
+    const tones = { ok: 'green', warn: 'orange', fail: 'red' }
+    for (const step of result.steps) {
+      const line = box.createDiv({ cls: 'rv-step' })
+      line.createEl('span', { cls: `rv-chip rv-${tones[step.status]}`, text: marks[step.status] })
+      line.createEl('span', { cls: 'rv-strong', text: step.label })
+      line.createEl('span', { cls: 'rv-muted rv-step-detail', text: step.detail })
+    }
+    if (!result.isOk) return box.createDiv({ cls: 'rv-callout rv-red', text: 'This folder cannot be followed through Git yet. Fix the step marked ✗ and check again.' })
+    if (this.folder) return box.createDiv({ cls: 'rv-callout rv-green', text: 'Connected. Rearview is following this project.' })
+    const add = box.createEl('button', { cls: 'mod-cta', text: `Add ${path.basename(result.root)}` })
+    add.addEventListener('click', async () => {
+      await this.plugin.addProject(result.root)
+      this.close()
+    })
+  }
+
+  onClose() {
+    this.contentEl.empty()
   }
 }
 
@@ -487,7 +814,7 @@ class TurnView extends ItemView {
   }
   getDisplayText() {
     const shown = this.plugin.current()
-    return shown ? `Turn ${shown.number} · ${titleOf(shown.turn.request)}` : 'Rearview'
+    return shown ? `${shown.label} · ${titleOf(shown.turn.request)}` : 'Rearview'
   }
   getIcon() {
     return 'eye'
@@ -510,17 +837,23 @@ class TurnView extends ItemView {
       else el.createDiv({ cls: 'rv-empty', text: 'No turns yet. Finish a turn in Claude Code and it appears here.' })
       return
     }
-    const { project, turn, number } = shown
+    const { project, turn, label } = shown
+    if (turn.files === null) {
+      // A commit's files load the first time it is shown.
+      el.createDiv({ cls: 'rv-muted rv-pad', text: `Loading ${label}…` })
+      this.plugin.ensureCommitFiles(project.root, turn)
+      return
+    }
     const review = turn.review || {}
     const result = review.state === 'done' ? review.result : null
 
     const head = el.createDiv({ cls: 'rv-head' })
-    head.createEl('span', { cls: 'rv-crumb', text: `${path.basename(project.root)} / Turn ${number}` })
+    head.createEl('span', { cls: 'rv-crumb', text: `${path.basename(project.root)} / ${label}` })
     head.createEl('span', { cls: 'rv-muted', text: new Date(turn.finishedAt).toLocaleString() })
 
     const card = el.createDiv({ cls: 'rv-card' })
     const cardHead = card.createDiv({ cls: 'rv-card-hd' })
-    sectionTitle(cardHead, 'Your request')
+    sectionTitle(cardHead, turn.isGit ? (turn.sha ? 'Commit message' : 'Working tree') : 'Your request')
     const s = score(turn)
     chip(cardHead, s.label, s.tone)
     card.createEl('p', { cls: 'rv-request', text: turn.request })
@@ -587,6 +920,10 @@ function renderCode(el, turn, result, project, plugin) {
 
     if (file.isSecret) {
       section.createDiv({ cls: 'rv-muted rv-pad', text: 'Contents hidden: this looks like a secrets file, so Rearview never reads it.' })
+      continue
+    }
+    if (!file.diff) {
+      section.createDiv({ cls: 'rv-muted rv-pad', text: 'No line changes to show (a binary, large, renamed or empty file).' })
       continue
     }
     const fileNotes = notes.filter(n => n.file === file.path)
@@ -830,9 +1167,10 @@ class SideView extends ItemView {
       el.createDiv({ cls: 'rv-muted rv-pad', text: 'No turn selected.' })
       return
     }
-    const { project, turn, number } = shown
+    const { project, turn, label } = shown
+    if (turn.files === null) return
 
-    sectionTitle(el, `Turn ${number} · files`)
+    sectionTitle(el, `${label} · files`)
     const files = el.createDiv({ cls: 'rv-list' })
     if (turn.files.length === 0) files.createDiv({ cls: 'rv-muted', text: 'No files changed.' })
     for (const file of turn.files) {
@@ -930,4 +1268,4 @@ class RearviewSettingTab extends PluginSettingTab {
 }
 
 module.exports = RearviewPlugin
-module.exports.testing = { parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap }
+module.exports.testing = { parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }

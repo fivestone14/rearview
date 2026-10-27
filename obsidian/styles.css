@@ -92,7 +92,7 @@
 .rv .rv-card-hd { display: flex; align-items: center; gap: 8px; }
 .rv .rv-card-hd .rv-h { margin: 0; }
 .rv .rv-card-hd .rv-chip:first-of-type:last-child { margin-left: auto; }
-.rv .rv-request { font-size: var(--font-ui-medium); }
+.rv .rv-request { font-size: var(--font-ui-medium); white-space: pre-wrap; }
 .rv .rv-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 
 .rv .rv-tabs { display: flex; align-items: center; gap: 4px; margin: 4px 0 16px; }
@@ -225,3 +225,13 @@
 .rv .rv-edge { fill: none; stroke: var(--text-faint); stroke-width: 1.4; }
 .rv .rv-arrowhead { fill: var(--text-faint); }
 .rv .rv-edge-row { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0; }
+
+/* Projects and Git */
+.rv .rv-group-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
+.rv .rv-group-head .rv-group-name { padding: 0; }
+.rv .rv-subhead { margin: 10px 8px 4px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.rv .rv-path-row { display: flex; gap: 8px; margin: 12px 0; }
+.rv .rv-path-row input { flex: 1 1 auto; min-width: 0; }
+.rv .rv-steps { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.rv .rv-step { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.rv .rv-step-detail { overflow-wrap: anywhere; }
