@@ -1,12 +1,13 @@
-// Rearview for Obsidian: shows the turns Rearview recorded in Claude Code, read from each project's
-// .claude/rearview/turns.json, and sends steers back through .claude/rearview/inbox.jsonl.
+// Rearview for Obsidian: rebuilds each Claude Code turn from the session transcripts Claude Code saves in
+// ~/.claude/projects/, reviews it with the model you choose, follows the project through Git, and steers
+// Claude by continuing a turn's conversation.
 //
-//   left sidebar  -> the turns of every connected project, newest first, with their check score
-//   main tab      -> the selected turn: your request, then Code / Check work / Reasoning
+//   left sidebar  -> projects, their turns newest first with their check score, and their Git changes
+//   main tab      -> the selected turn: your request, then Code / Map / Check work / Reasoning
 //   right sidebar -> the turn's files, Trace, and a box to steer Claude's next turn
 //
-// Desktop only: project folders sit outside the vault, so they are read with Node's fs,
-// and Trace runs git grep (an argument list, never a shell) in the project.
+// Desktop only: project folders sit outside the vault, so they are read with Node's fs, and git, Trace and
+// the CLI tools run with argument lists, never through a shell.
 
 const { ItemView, Modal, Notice, Plugin, PluginSettingTab, SecretComponent, Setting, requestUrl, setIcon } = require('obsidian')
 const fs = require('fs')
@@ -16,13 +17,10 @@ const { execFile } = require('child_process')
 const TURNS_VIEW = 'rearview-turns'
 const TURN_VIEW = 'rearview-turn'
 const SIDE_VIEW = 'rearview-side'
-const DATA_DIR = path.join('.claude', 'rearview')
-/** How often each project's turns.json is checked for changes. */
-const WATCH_MS = 1500
 /** A file's diff shows at most this many lines. */
 const MAX_DIFF_LINES = 400
 const MAX_TRACE_HITS = 40
-/** The same names Rearview treats as secrets (hooks/paths.ts): Trace never shows their lines. */
+/** File names that usually hold secrets (.env files, keys, credential stores): shown by name only, never read. */
 const SECRET_FILE =
   /(^|\/)(\.env(\..*)?|\.npmrc|\.pypirc|\.netrc|\.git-credentials|\.htpasswd|\.dockercfg|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|credentials(\.json)?|secrets?\.(json|ya?ml|toml)|[^/]*service[-_]?account[^/]*\.json|[^/]*\.(pem|key|p12|pfx|jks|keystore|kdbx|tfstate|tfstate\.backup))$/i
 
@@ -365,16 +363,19 @@ function parseTranscript(text, root) {
   // `claude -p` run's prompt carries no origin, and notifications and other sessions carry their own, so
   // neither starts a turn.
   const isPersonPrompt = row => row.type === 'user' && !row.isSidechain && !row.isMeta && row.origin && row.origin.kind === 'human'
+  // A steer sent from Rearview arrives as a `claude -p` prompt, which carries no origin; its opening marks it.
+  const isSteer = row => row.type === 'user' && !row.isSidechain && !row.isMeta && typeof (row.message || {}).content === 'string' && row.message.content.startsWith(STEER_PREFIX)
 
   const turns = []
   let turn = null
   const toolInputs = new Map()
   for (const row of rows) {
     if (row.isSidechain) continue
-    if (isPersonPrompt(row)) {
-      const request = textOf(row.message.content).trim()
+    if (isPersonPrompt(row) || isSteer(row)) {
+      const steered = isSteer(row)
+      const request = (steered ? row.message.content.slice(STEER_PREFIX.length) : textOf(row.message.content)).trim()
       if (!request) continue
-      turn = { id: row.uuid, sessionId: row.sessionId, request, answer: '', agentMessages: '', endReason: 'answer', startedAt: Date.parse(row.timestamp) || 0, finishedAt: Date.parse(row.timestamp) || 0, filesRead: [], files: [], affected: [], review: TRANSCRIPT_NOT_REVIEWED, byPath: new Map() }
+      turn = { id: row.uuid, sessionId: row.sessionId, isSteer: steered, request, answer: '', agentMessages: '', endReason: 'answer', startedAt: Date.parse(row.timestamp) || 0, finishedAt: Date.parse(row.timestamp) || 0, filesRead: [], files: [], affected: [], review: TRANSCRIPT_NOT_REVIEWED, byPath: new Map() }
       turns.push(turn)
       continue
     }
@@ -423,6 +424,9 @@ function parseTranscript(text, root) {
 }
 
 const TRANSCRIPT_NOT_REVIEWED = { state: 'skipped', reason: 'Not reviewed yet.' }
+
+/** How a steer from Rearview opens. A prompt that opens this way starts a turn of its own, marked as a steer. */
+const STEER_PREFIX = 'A correction from the Rearview review in Obsidian:'
 
 // ---------- Reviews: one model call turns a turn into a checklist, Why notes and reasoning steps ----------
 
@@ -573,15 +577,15 @@ function cliReply(presetId, stdout) {
   return String(json.response || '')
 }
 
-function runCommand(file, args, input, env) {
-  const dir = path.join(require('os').tmpdir(), 'rearview-review')
+/** Runs a command with `input` on standard input. By default in an empty folder, so a review never sees the project. */
+function runCommand(file, args, input, env, { cwd = null, timeoutMs = 240000 } = {}) {
+  const dir = cwd || path.join(require('os').tmpdir(), 'rearview-review')
   fs.mkdirSync(dir, { recursive: true })
   return new Promise((resolve, reject) => {
-    // An empty folder, so a review run never sees or touches the project.
     const child = require('child_process').spawn(file, args, { cwd: dir, env, stdio: ['pipe', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
-    const timer = setTimeout(() => child.kill(), 240000)
+    const timer = setTimeout(() => child.kill(), timeoutMs)
     child.stdout.on('data', chunk => (stdout += chunk))
     child.stderr.on('data', chunk => (stderr += chunk))
     child.on('error', error => {
@@ -676,7 +680,7 @@ function pickFolder() {
   }
 }
 
-// ---------- the Map: which files use which (the same import rules as hooks/trace.ts) ----------
+// ---------- the Map: which files use which, from their relative imports ----------
 
 /** The Map adds at most this many unchanged files that the changed files import. */
 const MAX_MAP_EXTRA = 8
@@ -793,6 +797,8 @@ class RearviewPlugin extends Plugin {
     this.reviews = await this.loadReviews()
     this.reviewQueue = []
     this.isReviewing = false
+    /** The steer being sent or last sent: { turnId, state: running | done | failed, reply | reason }. */
+    this.steering = null
     this.startedAt = Date.now()
     /** root -> { root, turns, error } */
     this.projects = new Map()
@@ -801,7 +807,6 @@ class RearviewPlugin extends Plugin {
     this.tab = 'code'
     this.trace = null
     this.draft = ''
-    this.watched = []
     /** turn id -> its Map, built once since it reads files */
     this.mapCache = new Map()
     this.gitTimers = []
@@ -929,12 +934,7 @@ class RearviewPlugin extends Plugin {
     this.projects.clear()
     this.transcriptCache.clear()
     for (const root of this.settings.projects) {
-      const file = path.join(root, DATA_DIR, 'turns.json')
-      const listener = () => this.loadProject(root, true)
-      fs.watchFile(file, { interval: WATCH_MS }, listener)
-      this.watched.push({ file, listener })
-      this.projects.set(root, { root, turns: [], legacyTurns: [], transcriptTurns: null, error: 'Loading…', git: null })
-      this.loadProject(root, false)
+      this.projects.set(root, { root, turns: [], transcriptTurns: null, error: 'Loading…', git: null })
       this.pollGit(root)
       this.gitTimers.push(window.setInterval(() => this.pollGit(root), GIT_POLL_MS))
       this.loadTranscripts(root, false)
@@ -944,8 +944,6 @@ class RearviewPlugin extends Plugin {
   }
 
   unwatch() {
-    for (const { file, listener } of this.watched) fs.unwatchFile(file, listener)
-    this.watched = []
     for (const timer of this.gitTimers) window.clearInterval(timer)
     this.gitTimers = []
   }
@@ -954,7 +952,7 @@ class RearviewPlugin extends Plugin {
   async pollGit(root) {
     if (this.gitBusy.has(root) || !this.projects.has(root)) return
     this.gitBusy.add(root)
-    // loadProject replaces a project's object, so results go to whichever object is current when they arrive.
+    // The project list is rebuilt when the folders change, so results go to whichever object is current when they arrive.
     const setGit = git => {
       const project = this.projects.get(root)
       if (project) project.git = git
@@ -1008,19 +1006,6 @@ class RearviewPlugin extends Plugin {
     await this.openAll()
   }
 
-  /** Reads turns.json, which Rearview's Claude Code plugin writes, for the reviews it already holds. */
-  async loadProject(root, isUpdate) {
-    const project = this.projects.get(root)
-    if (!project) return
-    try {
-      const data = JSON.parse(await fs.promises.readFile(path.join(root, DATA_DIR, 'turns.json'), 'utf8'))
-      project.legacyTurns = Array.isArray(data.turns) ? data.turns : []
-    } catch {
-      project.legacyTurns = []
-    }
-    await this.composeTurns(root, isUpdate)
-  }
-
   /** Re-reads the project's session transcripts that changed since the last look (the newest dozen sessions). */
   async loadTranscripts(root, isUpdate) {
     if (this.transcriptBusy.has(root)) return
@@ -1068,24 +1053,13 @@ class RearviewPlugin extends Plugin {
   }
 
   /**
-   * A project's turns: rebuilt from its Claude Code transcripts when it has any, else from turns.json.
-   * A review turns.json already holds stays with its turn: the same request, finished within five minutes.
+   * A project's turns, rebuilt from its Claude Code transcripts, each with its review from the chosen model.
    */
   async composeTurns(root, isUpdate) {
     const project = this.projects.get(root)
     if (!project) return
     const before = project.turns || []
-    const legacy = project.legacyTurns || []
-    if (project.transcriptTurns && project.transcriptTurns.length) {
-      project.turns = project.transcriptTurns.map(turn => {
-        const reviewed = this.reviews[turn.id]
-        if (reviewed) return { ...turn, review: reviewed }
-        const match = legacy.find(l => l.review && l.review.state === 'done' && l.request.trim() === turn.request && Math.abs(l.finishedAt - turn.finishedAt) < 5 * 60 * 1000)
-        return match ? { ...turn, review: { ...match.review, by: 'Rearview for Claude Code' } } : turn
-      })
-    } else {
-      project.turns = legacy
-    }
+    project.turns = (project.transcriptTurns || []).map(turn => (this.reviews[turn.id] ? { ...turn, review: this.reviews[turn.id] } : turn))
     project.error = project.turns.length ? null : 'No Claude Code sessions in this folder yet. Turns appear here as soon as one starts.'
     const latest = project.turns[project.turns.length - 1]
     if (latest) this.mapCache.delete(latest.id)
@@ -1214,25 +1188,52 @@ class RearviewPlugin extends Plugin {
     require('electron').shell.openPath(path.join(root, file))
   }
 
-  /** Queues a steer for the Claude Code session running in `root`; true when it was queued. */
-  async sendSteer(root, text, remember) {
-    const steer = text.trim()
-    if (steer === '') {
+  /**
+   * Continues the turn's Claude Code conversation with a correction, in the background (`claude -p --resume`).
+   * Claude may edit files; a shell command it asks for is refused, as nobody is there to approve it.
+   * Its reply and changes appear as a new turn, marked as a steer.
+   */
+  async steer(root, turn, text) {
+    const message = text.trim()
+    if (message === '') {
       new Notice('Write what Claude should do instead first.')
       return false
     }
-    let code = null
-    try {
-      code = JSON.parse(await fs.promises.readFile(path.join(root, DATA_DIR, 'session.json'), 'utf8')).code
-    } catch {
-      // No session file: Rearview has not run in this project yet.
-    }
-    if (typeof code !== 'string') {
-      new Notice('Rearview: start a Claude Code session in this project first.')
+    if (!turn.sessionId) {
+      new Notice('This has no Claude Code conversation to continue. Use Copy and paste it into Claude Code.')
       return false
     }
-    await fs.promises.appendFile(path.join(root, DATA_DIR, 'inbox.jsonl'), `${JSON.stringify({ code, text: steer, remember })}\n`)
-    new Notice('Sent. It reaches Claude Code within a few seconds, if a session is open in this project.')
+    const file = await findCommand('claude')
+    if (!file) {
+      new Notice('Rearview cannot find Claude Code (claude). Use Copy and paste it into Claude Code.')
+      return false
+    }
+    this.steering = { turnId: turn.id, state: 'running' }
+    this.refresh([SIDE_VIEW])
+    try {
+      const args = ['-p', '--resume', turn.sessionId, '--output-format', 'json', '--permission-mode', 'acceptEdits']
+      const stdout = await runCommand(file, args, `${STEER_PREFIX} ${message}`, { ...process.env, PATH: await shellPath() }, { cwd: root, timeoutMs: 15 * 60 * 1000 })
+      const json = parseJsonObject(stdout) || {}
+      if (json.is_error) throw new Error(String(json.result || 'Claude Code reported an error.'))
+      this.steering = { turnId: turn.id, state: 'done', reply: String(json.result || '').trim() }
+    } catch (error) {
+      this.steering = { turnId: turn.id, state: 'failed', reason: error.message }
+    }
+    this.refresh([SIDE_VIEW])
+    return this.steering.state === 'done'
+  }
+
+  /** Copies a correction, with the request and files it is about, to paste into Claude Code yourself. */
+  async copySteer(turn, text) {
+    const message = text.trim()
+    if (message === '') {
+      new Notice('Write what Claude should do instead first.')
+      return false
+    }
+    const files = (turn.files || []).map(f => f.path)
+    const about = `About my request "${titleOf(turn.request)}"${files.length ? ` (it changed ${files.slice(0, 6).join(', ')}${files.length > 6 ? ', …' : ''})` : ''}:`
+    await navigator.clipboard.writeText(`${about}\n${message}`)
+    new Notice('Copied. Paste it into Claude Code.')
     return true
   }
 }
@@ -1349,7 +1350,7 @@ class TurnsView extends ItemView {
       if (project.turns.length === 0) group.createDiv({ cls: 'rv-empty-line', text: project.error || 'No turns yet.' })
       const newestFirst = project.turns.map((turn, i) => ({ turn, n: i + 1 })).reverse()
       for (const { turn, n } of newestFirst.slice(0, turnLimit)) {
-        item(group, project, turn, titleOf(turn.request), [`T${n}`, turn.files.length ? filesLabel(turn) : '', relativeTime(turn.finishedAt)])
+        item(group, project, turn, titleOf(turn.request), [`T${n}`, turn.isSteer ? 'steer' : '', turn.files.length ? filesLabel(turn) : '', relativeTime(turn.finishedAt)])
       }
       showAll(group, turnsKey, newestFirst.length - SIDEBAR_TURNS)
 
@@ -1485,6 +1486,7 @@ class TurnView extends ItemView {
     sectionTitle(cardHead, turn.isGit ? (turn.sha ? 'Commit message' : 'Working tree') : 'Your request')
     // Rearview keeps a system message's turn only when it changed files, and says where it came from.
     if (turn.origin) chip(cardHead, `from ${turn.origin.replace(/-/g, ' ')}`, 'purple')
+    if (turn.isSteer) chip(cardHead, 'steer from Rearview', 'blue')
     const s = score(turn)
     chip(cardHead, s.label, s.tone)
     card.createEl('p', { cls: 'rv-request', text: turn.request })
@@ -1844,17 +1846,28 @@ class SideView extends ItemView {
     const text = steer.createEl('textarea', { attr: { id: 'rv-steer-text', rows: '4' } })
     text.value = this.plugin.draft
     text.addEventListener('input', () => (this.plugin.draft = text.value))
-    const rememberRow = steer.createEl('label', { cls: 'rv-check' })
-    const remember = rememberRow.createEl('input', { attr: { type: 'checkbox' } })
-    rememberRow.createEl('span', { text: 'Suggest this as a principle' })
-    const send = steer.createEl('button', { cls: 'mod-cta', text: 'Send to Claude' })
-    send.addEventListener('click', async () => {
-      if (await this.plugin.sendSteer(project.root, text.value, remember.checked)) {
-        this.plugin.draft = ''
-        text.value = ''
-        remember.checked = false
-      }
+    const canResume = !turn.isGit && !!turn.sessionId
+    const buttons = steer.createDiv({ cls: 'rv-steer-buttons' })
+    const steering = this.plugin.steering && this.plugin.steering.turnId === turn.id ? this.plugin.steering : null
+    const isRunning = !!this.plugin.steering && this.plugin.steering.state === 'running'
+    if (canResume) {
+      const send = buttons.createEl('button', { cls: 'mod-cta', text: isRunning ? 'Claude is working…' : 'Send to Claude' })
+      send.disabled = isRunning
+      send.addEventListener('click', async () => {
+        if (await this.plugin.steer(project.root, turn, text.value)) this.plugin.draft = ''
+      })
+    }
+    const copy = buttons.createEl('button', { text: 'Copy' })
+    copy.addEventListener('click', () => this.plugin.copySteer(turn, text.value))
+    steer.createDiv({
+      cls: 'rv-steer-note',
+      text: canResume
+        ? 'Send continues this conversation in the background: Claude can edit files, and shell commands it asks for are refused. Its changes appear as a new turn. Copy puts the message on the clipboard to paste into Claude Code yourself.'
+        : 'Copy puts the message on the clipboard, to paste into Claude Code.',
     })
+    if (steering && steering.state === 'running') steer.createDiv({ cls: 'rv-muted', text: 'Claude is working on it. Its changes appear as a new turn when it finishes.' })
+    if (steering && steering.state === 'done') steer.createDiv({ cls: 'rv-steer-done', text: `Done. Claude replied: ${steering.reply.slice(0, 280) || '(no text)'}` })
+    if (steering && steering.state === 'failed') steer.createDiv({ cls: 'rv-review-error', text: `Not sent: ${steering.reason}` })
   }
 
   renderTrace(el) {

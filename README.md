@@ -13,7 +13,7 @@ While Claude Code works on your project, Rearview shows each request you made an
 - **Reviews with any model.** A turn is reviewed by itself once Claude finishes it, or with **Review** on any turn. Use a tool you are already signed in to (Claude Code, OpenAI Codex, Gemini CLI), a hosted API with your key (Anthropic, OpenAI, Google Gemini, OpenRouter, or any OpenAI-compatible address), or a model on your own computer (Ollama, LM Studio).
 - **Trace.** Click **Trace** beside a Why note to see where a name is defined and used, without leaving the review.
 - **Git.** Each project also lists its uncommitted changes, refreshed every few seconds, and its recent commits. Open one to see its diff and Map like a turn.
-- **Steer.** Write what Claude should do instead and send it to the Claude Code session open in that project.
+- **Steer.** Write what Claude should do instead. **Send to Claude** continues that turn's conversation in the background, and Claude's reply and changes appear as a new turn; **Copy** puts the message on your clipboard to paste into Claude Code.
 
 Rearview reads what Claude Code already saves, so it never sees Claude's private reasoning. Reasons and steps are rebuilt from what Claude said, read and changed, and each one says where it came from.
 
@@ -53,7 +53,7 @@ To update Rearview later, copy the three files again and restart Obsidian.
    - Open **Map** to see what the change touches beyond the files it edited.
    - Use **Trace** on any name you want to follow.
    - Check **Check work** for anything partly done or missed, and **Reasoning** for shortcuts or changes nobody asked for.
-5. **Steer.** In the right sidebar, write what Claude should do instead and press **Send to Claude**.
+5. **Steer.** In the right sidebar, write what Claude should do instead. **Send to Claude** continues the turn's conversation in the background (`claude -p --resume`): Claude can edit files, and shell commands it asks for are refused, since nobody is there to approve them. Its reply and changes appear as a new turn marked *steer*. If that conversation is open in Claude Code, reopen it there to see the steer. Or press **Copy** and paste the message into Claude Code yourself.
 6. **Look at Git.** Under *Git*, open *Uncommitted changes* for everything changed since the last commit, including edits made by shell commands, or any recent commit.
 
 ## Choose the review model
@@ -68,11 +68,9 @@ Open **Settings › Rearview › Review model** and pick how reviews run. The se
 
 Click **Test** to check the connection. Small local models sometimes answer in a shape Rearview cannot read; the turn then says so and offers **Try again**, and a larger model usually fixes it.
 
-## Steer today
+## The companion Claude Code plugin
 
-**Steer** comes from Rearview's companion Claude Code plugin, the `hooks/` folder in this repository, which delivers your message into the running session. Steering from Obsidian alone is being built next.
-
-To install the companion plugin, from the cloned repository:
+This repository also holds an earlier companion plugin for Claude Code, the `hooks/` folder, which adds a review pane inside Claude Code itself. Rearview in Obsidian no longer needs it, and it is being retired. To install it anyway, from the cloned repository:
 
 ```bash
 claude plugin marketplace add /path/to/rearview
@@ -88,7 +86,7 @@ claude plugin install rearview@rearview
 - **Reviews run isolated.** A CLI review runs in an empty folder as a plain model call: Claude Code gets no tools, hooks or MCP servers, and saves no session.
 - **Secret-looking files are never shown.** `.env` files, private keys, credential and secrets files, Terraform state and similar names appear by name only, in turns, Git changes, Trace and the Map.
 - **No command can be smuggled in.** `git` runs with an argument list, never through a shell, and Trace only searches plain names.
-- **A steer is sent only by you.** Steers go to the Claude Code session only when they carry a random code that session made when it started, so a file that came with a cloned project cannot send anything.
+- **A steer is sent only by you.** Rearview continues a conversation only when you press **Send to Claude**, and the background run can edit files but not run shell commands.
 
 ## Limits
 
