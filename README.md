@@ -67,6 +67,8 @@ The other files:
 | `.claude/rearview/principles.md` in your project | Your principles. Plain Markdown: read it, edit it, commit it to share with your team. |
 | `.claude/rearview/signals.jsonl` in your project | Every *Looks right* and *Steer*, the evidence principles are suggested from |
 | Claude Code's plugin store | The last 20 turns per project, with their reviews |
+| `.claude/rearview/turns.json` in your project | The same turns and reviews, without Claude's full messages, for the Obsidian view |
+| `.claude/rearview/session.json` and `inbox.jsonl` in your project | This session's random code, and steers sent from Obsidian waiting to be read |
 
 A principle looks like this:
 
@@ -86,11 +88,11 @@ A principle looks like this:
 
 Rearview uses no third-party services and makes no network calls of its own. The review, drift check and principle suggestions are model calls made through your Claude Code session's own connection, so your request, the diffs and Claude's replies for each turn are sent to Anthropic the same way your conversation is. Choose the models under the plugin's settings (`reviewModel`, default `sonnet`; `checkModel`, default `haiku`).
 
-The last 20 turns, with their diffs, are kept on your computer in Claude Code's plugin store so the pane can show them in later sessions. A secret typed into an ordinary source file is part of its diff like any other line.
+The last 20 turns, with their diffs, are kept on your computer in Claude Code's plugin store so the pane can show them in later sessions, and in `.claude/rearview/turns.json` for the Obsidian view. Add `.claude/rearview/` to the project's `.gitignore` if you don't want them committed. A secret typed into an ordinary source file is part of its diff like any other line.
 
 ### Security
 
-What Rearview can do is limited to what `claude plugin validate .` lists: read project files, write its two files under `.claude/rearview/`, run `git` and `grep`, call the model, and send a prompt to Claude when you press a button. It opens no ports, loads no code from elsewhere and has no dependencies.
+What Rearview can do is limited to what `claude plugin validate .` lists: read project files, write its files under `.claude/rearview/`, run `git` and `grep`, call the model, and send a prompt to Claude when you press a button, here or in the Obsidian view. A steer from Obsidian is sent only when it carries the random code Rearview made when this session started, so an inbox file that came with a cloned project cannot send anything. It opens no ports, loads no code from elsewhere and has no dependencies.
 
 It is built for opening projects you did not write:
 
@@ -101,6 +103,16 @@ It is built for opening projects you did not write:
 - **A failing check never locks you out.** If the drift check or the edit guard itself fails, your prompt or tool call goes through.
 
 Installing a plugin runs its code in every session, so read the code first; it is about 1,700 lines of TypeScript in `hooks/`.
+
+## Obsidian
+
+`obsidian/` is a desktop Obsidian plugin that shows the same reviews in a full-size layout: turns in the left sidebar, the turn in a tab (*Code*, *Check work*, *Reasoning*), and its files, Trace and a steer box in the right sidebar. It follows `.claude/rearview/turns.json` in each project you connect, so a new turn appears as soon as Claude finishes it.
+
+1. Copy `obsidian/main.js`, `manifest.json` and `styles.css` to `<your vault>/.obsidian/plugins/rearview/`.
+2. In Obsidian, turn on Rearview under **Settings › Community plugins**, then add your project folders in its settings.
+3. Click the eye in the ribbon, or run **Rearview: Open the latest turn**.
+
+**Send to Claude** in Obsidian reaches the Claude Code session open in that project within a few seconds, as your next message there.
 
 ## Limits
 
