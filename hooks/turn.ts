@@ -7,7 +7,7 @@
 
 import type { EngineInterface } from 'claude-code'
 
-import { exportTurns } from './bridge'
+import { exportTurns, readSharedTurns } from './bridge'
 import { unifiedDiff } from './diff'
 import { looksLikeSecretFile, projectPath, projectStoreKey, readProjectFile, runInProject } from './paths'
 import { getActiveTurn, getTurns, updateActiveTurn, updateTurns } from './state'
@@ -240,11 +240,42 @@ async function turnsStoreKey($: EngineInterface): Promise<string> {
   return projectStoreKey($, 'turns:v1')
 }
 
-/** Keeps finished turns across sessions, per project, and shares them with the Obsidian view. */
+/**
+ * Keeps finished turns across sessions, per project, and shares them with the Obsidian view.
+ * Several sessions can work in one project, each holding its own list, so a save merges this session's
+ * turns into what the store and turns.json hold now instead of replacing them. Only the saved list is
+ * merged: this session's own list, which its reviewer works through, stays its own.
+ */
 export async function saveTurns($: EngineInterface): Promise<void> {
-  const turns = await getTurns($)
-  await $.store.set(await turnsStoreKey($), turns)
-  await exportTurns($, turns)
+  const key = await turnsStoreKey($)
+  const stored = await $.store.get(key)
+  const merged = mergeTurns([Array.isArray(stored) ? (stored as Turn[]) : [], await readSharedTurns($), await getTurns($)])
+  await $.store.set(key, merged)
+  await exportTurns($, merged)
+}
+
+/** How far a turn's review has got: a copy with a finished review beats one still waiting for it. */
+function reviewRank(turn: Turn): number {
+  return turn.review.state === 'pending' ? 0 : 1
+}
+
+/**
+ * Turns from several lists, one per id, oldest first, the newest MAX_STORED_TURNS kept. Of two copies of a
+ * turn the one with the further review wins, then the one with Claude's messages, then the later list's.
+ */
+export function mergeTurns(lists: Turn[][]): Turn[] {
+  const byId = new Map<string, Turn>()
+  for (const list of lists) {
+    for (const turn of list) {
+      const held = byId.get(turn.id)
+      const isBetter =
+        !held ||
+        reviewRank(turn) > reviewRank(held) ||
+        (reviewRank(turn) === reviewRank(held) && (turn.agentMessages !== '' || held.agentMessages === ''))
+      byId.set(turn.id, isBetter ? { ...turn, agentMessages: turn.agentMessages || held?.agentMessages || '' } : held)
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.finishedAt - b.finishedAt).slice(-MAX_STORED_TURNS)
 }
 
 export async function loadTurns($: EngineInterface): Promise<void> {

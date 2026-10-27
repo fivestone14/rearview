@@ -6,10 +6,12 @@
 //
 // A steer is sent to Claude only when it carries this session's code, so an inbox file that came
 // with a cloned project, or was left from an earlier session, can never put words in Claude's mouth.
+// Likewise turns.json is signed with a secret kept in Claude Code's plugin store, never in the project,
+// and other sessions merge it only when the signature holds, so a planted file cannot add turns.
 
 import type { EngineInterface } from 'claude-code'
 
-import { readProjectFile, writeProjectFile } from './paths'
+import { projectStoreKey, readProjectFile, sha256, writeProjectFile } from './paths'
 import { recordSignal } from './principles'
 import { setProposedRule } from './state'
 import type { Turn } from '../types'
@@ -25,10 +27,40 @@ const MAX_STEER_CHARS = 4000
 /** One line of inbox.jsonl, as the Obsidian view writes it. */
 type InboxEntry = { code?: unknown; text?: unknown; remember?: unknown }
 
+/** The secret turns.json is signed with: one per project, made on first use, kept in the plugin store. */
+async function sharedSecret($: EngineInterface): Promise<string> {
+  const key = await projectStoreKey($, 'shared-turns-secret:v1')
+  const held = await $.store.get(key)
+  if (typeof held === 'string') return held
+  const secret = crypto.randomUUID()
+  await $.store.set(key, secret)
+  return secret
+}
+
+async function signature($: EngineInterface, turns: unknown[]): Promise<string> {
+  return sha256(`${await sharedSecret($)}:${JSON.stringify(turns)}`)
+}
+
+/**
+ * The turns other sessions in this project last shared, without Claude's messages (turns.json leaves them out).
+ * Nothing when the file is missing, broken, or not signed with this machine's secret.
+ */
+export async function readSharedTurns($: EngineInterface): Promise<Turn[]> {
+  try {
+    const file = JSON.parse((await readProjectFile($, TURNS_FILE)) ?? '{}') as { turns?: unknown; sig?: unknown }
+    if (!Array.isArray(file.turns) || file.sig !== (await signature($, file.turns))) return []
+    return file.turns
+      .filter((turn): turn is Omit<Turn, 'agentMessages'> => typeof turn === 'object' && turn !== null && typeof turn.id === 'string')
+      .map(turn => ({ ...turn, agentMessages: '' }))
+  } catch {
+    return []
+  }
+}
+
 /** Writes the turns for the Obsidian view, without Claude's full messages, which only the reviewer needs. */
 export async function exportTurns($: EngineInterface, turns: Turn[]): Promise<void> {
   const shared = turns.map(({ agentMessages: _, ...turn }) => turn)
-  const file = { version: 1, root: await $.session.root(), updatedAt: Date.now(), turns: shared }
+  const file = { version: 1, root: await $.session.root(), updatedAt: Date.now(), sig: await signature($, shared), turns: shared }
   await writeProjectFile($, TURNS_FILE, JSON.stringify(file))
 }
 

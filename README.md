@@ -92,7 +92,7 @@ The last 20 turns, with their diffs, are kept on your computer in Claude Code's 
 
 ### Security
 
-What Rearview can do is limited to what `claude plugin validate .` lists: read project files, write its files under `.claude/rearview/`, run `git` and `grep`, call the model, and send a prompt to Claude when you press a button, here or in the Obsidian view. A steer from Obsidian is sent only when it carries the random code Rearview made when this session started, so an inbox file that came with a cloned project cannot send anything. It opens no ports, loads no code from elsewhere and has no dependencies.
+What Rearview can do is limited to what `claude plugin validate .` lists: read project files, write its files under `.claude/rearview/`, run `git` and `grep`, call the model, and send a prompt to Claude when you press a button, here or in the Obsidian view. A steer from Obsidian is sent only when it carries the random code Rearview made when this session started, so an inbox file that came with a cloned project cannot send anything. Several sessions in one project merge their turns rather than overwrite each other's, and `turns.json` is signed with a secret kept in Claude Code's plugin store, so a `turns.json` that came with a cloned project is never merged in. It opens no ports, loads no code from elsewhere and has no dependencies.
 
 It is built for opening projects you did not write:
 
