@@ -2,7 +2,7 @@
 
 An Obsidian plugin for reviewing what an AI coding agent changed, built to be easier to follow than reading changes in an IDE.
 
-While Claude Code works on your project, Rearview shows each request you made and what came of it: every file changed, with the diff, how the changed files connect, and where a name is defined and used. Where a review exists, it also shows why each change was made, whether the request was fully done, and Claude's reasoning rebuilt from its work. Everything sits in one Obsidian window, next to your notes.
+While Claude Code works on your project, Rearview shows each request you made and what came of it: every file changed, with the diff, how the changed files connect, and where a name is defined and used. A review by the model of your choice adds why each change was made, whether the request was fully done, and Claude's reasoning rebuilt from its work. Everything sits in one Obsidian window, next to your notes.
 
 ## What to expect
 
@@ -10,6 +10,7 @@ While Claude Code works on your project, Rearview shows each request you made an
 - **Code.** Each changed file's diff, line by line. Under a line that needs explaining, a *Why* note says why it changed and where that reason comes from: *Claude said so*, *inferred* from the code, or *no reason found*.
 - **Map.** The changed files in the middle, the files that use them on the left, and the files they use on the right, with lines for "uses". Click a changed file to jump to its diff.
 - **Check work and Reasoning.** Your request split into parts marked *done*, *partly* or *missed*, and Claude's steps rebuilt with problems first (shortcuts, unrequested changes, skipped work).
+- **Reviews with any model.** A turn is reviewed by itself once Claude finishes it, or with **Review** on any turn. Use a tool you are already signed in to (Claude Code, OpenAI Codex, Gemini CLI), a hosted API with your key (Anthropic, OpenAI, Google Gemini, OpenRouter, or any OpenAI-compatible address), or a model on your own computer (Ollama, LM Studio).
 - **Trace.** Click **Trace** beside a Why note to see where a name is defined and used, without leaving the review.
 - **Git.** Each project also lists its uncommitted changes, refreshed every few seconds, and its recent commits. Open one to see its diff and Map like a turn.
 - **Steer.** Write what Claude should do instead and send it to the Claude Code session open in that project.
@@ -55,9 +56,21 @@ To update Rearview later, copy the three files again and restart Obsidian.
 5. **Steer.** In the right sidebar, write what Claude should do instead and press **Send to Claude**.
 6. **Look at Git.** Under *Git*, open *Uncommitted changes* for everything changed since the last commit, including edits made by shell commands, or any recent commit.
 
-## Reviews and Steer today
+## Choose the review model
 
-The *Why* notes, **Check work**, **Reasoning** and **Steer** come from Rearview's companion Claude Code plugin, the `hooks/` folder in this repository. It reviews each turn with a model call through your Claude Code session and delivers steers into it. Without it, Rearview still shows every turn, its diffs, Map, Trace and Git, and marks turns *not reviewed*. Reviews and steering that run from Obsidian alone are being built next.
+Open **Settings › Rearview › Review model** and pick how reviews run. The setting says where your code goes for each choice.
+
+- **Claude Code (the default).** Nothing to set up: reviews run on the Claude Code login you already use. Leave *Model* blank for your default, or type `sonnet`, `opus` or `haiku`.
+- **OpenAI Codex or Gemini CLI.** Install the tool and sign in to it, then pick it. The *Status* line says whether Rearview found it.
+- **An API with your key** (Anthropic, OpenAI, Google Gemini, OpenRouter). Pick it, click the *API key* box to add your key, then **Load models** and pick one. Keys are kept in Obsidian's secret storage (Obsidian 1.11.4 or newer), not in Rearview's settings file.
+- **A model on your computer** (free and private). Install [Ollama](https://ollama.com), run `ollama pull qwen2.5-coder` (or any model), pick **Ollama (on this computer)**, then **Load models**. LM Studio works the same way.
+- **Anything else** that speaks the OpenAI API: pick **Custom**, enter its address, a key if it needs one, and the model.
+
+Click **Test** to check the connection. Small local models sometimes answer in a shape Rearview cannot read; the turn then says so and offers **Try again**, and a larger model usually fixes it.
+
+## Steer today
+
+**Steer** comes from Rearview's companion Claude Code plugin, the `hooks/` folder in this repository, which delivers your message into the running session. Steering from Obsidian alone is being built next.
 
 To install the companion plugin, from the cloned repository:
 
@@ -71,7 +84,8 @@ claude plugin install rearview@rearview
 
 ## Privacy and security
 
-- **Everything stays on your computer.** Rearview reads Claude Code's transcripts and your project's files, and runs `git` in the project. Its only network use is the connection check, which asks your Git remote (for example GitHub) for its branches.
+- **You choose where reviews go.** Rearview reads Claude Code's transcripts and your project's files, and runs `git` in the project. A review sends the turn (your request, Claude's messages and the diffs) to the review model you chose: through your Claude Code, Codex or Gemini CLI login, to the API you added a key for, or to a model on your own computer, where nothing leaves it. Apart from reviews, its only network use is the connection check, which asks your Git remote for its branches.
+- **Reviews run isolated.** A CLI review runs in an empty folder as a plain model call: Claude Code gets no tools, hooks or MCP servers, and saves no session.
 - **Secret-looking files are never shown.** `.env` files, private keys, credential and secrets files, Terraform state and similar names appear by name only, in turns, Git changes, Trace and the Map.
 - **No command can be smuggled in.** `git` runs with an argument list, never through a shell, and Trace only searches plain names.
 - **A steer is sent only by you.** Steers go to the Claude Code session only when they carry a random code that session made when it started, so a file that came with a cloned project cannot send anything.
