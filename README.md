@@ -68,18 +68,6 @@ Open **Settings › Rearview › Review model** and pick how reviews run. The se
 
 Click **Test** to check the connection. Small local models sometimes answer in a shape Rearview cannot read; the turn then says so and offers **Try again**, and a larger model usually fixes it.
 
-## The companion Claude Code plugin
-
-This repository also holds an earlier companion plugin for Claude Code, the `hooks/` folder, which adds a review pane inside Claude Code itself. Rearview in Obsidian no longer needs it, and it is being retired. To install it anyway, from the cloned repository:
-
-```bash
-claude plugin marketplace add /path/to/rearview
-```
-
-```bash
-claude plugin install rearview@rearview
-```
-
 ## Privacy and security
 
 - **You choose where reviews go.** Rearview reads Claude Code's transcripts and your project's files, and runs `git` in the project. A review sends the turn (your request, Claude's messages and the diffs) to the review model you chose: through your Claude Code, Codex or Gemini CLI login, to the API you added a key for, or to a model on your own computer, where nothing leaves it. Apart from reviews, its only network use is the connection check, which asks your Git remote for its branches.
@@ -97,14 +85,10 @@ claude plugin install rearview@rearview
 
 ## Development
 
-The Obsidian plugin is plain JavaScript in `obsidian/`, with no build step. The companion Claude Code plugin is checked and tested with:
+The plugin is plain JavaScript in `obsidian/`, with no build step and no dependencies. Run its tests with:
 
 ```bash
-claude plugin validate .
-```
-
-```bash
-claude plugin test .
+node obsidian/test.js
 ```
 
 ## License
