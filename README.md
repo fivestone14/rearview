@@ -106,7 +106,7 @@ Installing a plugin runs its code in every session, so read the code first; it i
 
 ## Obsidian
 
-`obsidian/` is a desktop Obsidian plugin that shows the same reviews in a full-size layout: projects and their turns in the left sidebar, the turn in a tab (*Code*, *Map*, *Check work*, *Reasoning*), and its files, Trace and a steer box in the right sidebar. It follows `.claude/rearview/turns.json` in each project you add, so a new turn appears as soon as Claude finishes it.
+`obsidian/` is a desktop Obsidian plugin that shows the same reviews in a full-size layout: projects and their turns in the left sidebar, the turn in a tab (*Code*, *Map*, *Check work*, *Reasoning*), and its files, Trace and a steer box in the right sidebar. It reads the turns straight from the session transcripts Claude Code already saves in `~/.claude/projects/` (each prompt you type starts a turn, with Claude's messages and every edit it made), so a turn appears and grows while Claude works. Headless `claude -p` runs and notifications are not turns. Edits made through shell commands leave no diff in a transcript; they show in the project's Git section.
 
 Each project is also followed through Git. **Add project folder** first checks the connection step by step (the folder, Git, the repository, branch and last commit, the remote and whether GitHub answers, ahead and behind) and adds the folder only when it is in a Git repository. The project's **Git** section then lists its uncommitted changes, refreshed every few seconds, and its recent commits; open one to see its diff and Map like a turn. Git changes are not reviewed, and secret-looking files show their name only.
 

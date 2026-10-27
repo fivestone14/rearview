@@ -245,6 +245,148 @@ async function loadCommitFiles(root, sha) {
   return show.code === 0 ? parseGitPatch(show.stdout) : []
 }
 
+// ---------- Claude Code transcripts: turns rebuilt from what Claude Code already saves ----------
+
+/** How often a project's transcripts are checked for new rows. */
+const TRANSCRIPT_POLL_MS = 3000
+/** The turn list keeps this many of the newest turns across a project's sessions. */
+const MAX_TRANSCRIPT_TURNS = 60
+/** Only this many of a project's most recent session transcripts are read. */
+const MAX_TRANSCRIPT_FILES = 12
+/** Claude's tools that change a file. */
+const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+
+function claudeProjectsDir() {
+  return path.join(require('os').homedir(), '.claude', 'projects')
+}
+
+/** The folder where Claude Code keeps a project's session transcripts, or null when it has none yet. */
+async function findTranscriptDir(root) {
+  const base = claudeProjectsDir()
+  const named = path.join(base, root.replace(/[^A-Za-z0-9]/g, '-'))
+  try {
+    if ((await fs.promises.stat(named)).isDirectory()) return named
+  } catch {
+    // Claude Code shortens very long paths; look for a transcript that names this folder instead.
+  }
+  let folders = []
+  try {
+    folders = await fs.promises.readdir(base)
+  } catch {
+    return null
+  }
+  for (const folder of folders) {
+    const dir = path.join(base, folder)
+    const files = (await fs.promises.readdir(dir).catch(() => [])).filter(f => f.endsWith('.jsonl'))
+    for (const file of files.slice(0, 3)) {
+      const head = (await fs.promises.readFile(path.join(dir, file), 'utf8').catch(() => '')).slice(0, 20000)
+      if (head.includes(`"cwd":${JSON.stringify(root)}`)) return dir
+    }
+  }
+  return null
+}
+
+function textOf(content) {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content.filter(block => block && block.type === 'text').map(block => block.text).join('\n')
+}
+
+/** A tool's file path relative to the project, or as it is when outside it. */
+function relativeTo(root, file) {
+  return file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file
+}
+
+/** Edit results as unified diff hunks: `@@ -a,b +c,d @@` and the lines. A new file is all added lines. */
+function hunksOf(result) {
+  if (Array.isArray(result.structuredPatch) && result.structuredPatch.length) {
+    return result.structuredPatch.map(h => `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@\n${h.lines.join('\n')}`)
+  }
+  if (result.type === 'create' && typeof result.content === 'string') {
+    const lines = result.content.endsWith('\n') ? result.content.slice(0, -1).split('\n') : result.content.split('\n')
+    return [`@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}`]
+  }
+  return []
+}
+
+/**
+ * One session transcript (JSON lines) as turns: each starts at a prompt the person sent and runs until the
+ * next one, gathering Claude's messages, the files it read, and every file its tools changed with the diff.
+ * System messages (task notifications, hook feedback, other sessions) stay inside the turn they arrive in.
+ */
+function parseTranscript(text, root) {
+  const rows = []
+  for (const line of text.split('\n')) {
+    if (!line) continue
+    try {
+      rows.push(JSON.parse(line))
+    } catch {
+      // A row still being written; the next read gets it whole.
+    }
+  }
+  // Claude Code stamps what a person typed (in the app, the terminal or the editor) with origin `human`. A
+  // `claude -p` run's prompt carries no origin, and notifications and other sessions carry their own, so
+  // neither starts a turn.
+  const isPersonPrompt = row => row.type === 'user' && !row.isSidechain && !row.isMeta && row.origin && row.origin.kind === 'human'
+
+  const turns = []
+  let turn = null
+  const toolInputs = new Map()
+  for (const row of rows) {
+    if (row.isSidechain) continue
+    if (isPersonPrompt(row)) {
+      const request = textOf(row.message.content).trim()
+      if (!request) continue
+      turn = { id: row.uuid, sessionId: row.sessionId, request, answer: '', agentMessages: '', endReason: 'answer', startedAt: Date.parse(row.timestamp) || 0, finishedAt: Date.parse(row.timestamp) || 0, filesRead: [], files: [], affected: [], review: TRANSCRIPT_NOT_REVIEWED, byPath: new Map() }
+      turns.push(turn)
+      continue
+    }
+    if (!turn) continue
+    turn.finishedAt = Date.parse(row.timestamp) || turn.finishedAt
+    const content = (row.message || {}).content
+    if (row.type === 'assistant' && Array.isArray(content)) {
+      for (const block of content) {
+        if (block.type === 'text' && block.text.trim()) {
+          turn.agentMessages += `${block.text.trim()}\n\n`
+          turn.answer = block.text.trim()
+        } else if (block.type === 'tool_use') {
+          toolInputs.set(block.id, block)
+          if (block.name === 'Read' && block.input && block.input.file_path) turn.filesRead.push(relativeTo(root, block.input.file_path))
+        }
+      }
+    }
+    const result = row.toolUseResult
+    const isEdit = result && typeof result === 'object' && typeof result.filePath === 'string' && ('structuredPatch' in result || result.type === 'create')
+    if (row.type === 'user' && isEdit) {
+      const use = Array.isArray(content) ? content.find(block => block.type === 'tool_result') : null
+      const tool = use && toolInputs.get(use.tool_use_id)
+      if (tool && !EDIT_TOOLS.has(tool.name)) continue
+      const file = relativeTo(root, result.filePath)
+      let changed = turn.byPath.get(file)
+      if (!changed) {
+        changed = { path: file, change: result.type === 'create' && !result.originalFile ? 'new' : 'edited', hunks: [], added: 0, removed: 0 }
+        turn.byPath.set(file, changed)
+        turn.files.push(changed)
+      }
+      for (const hunk of hunksOf(result)) {
+        changed.hunks.push(hunk)
+        for (const line of hunk.split('\n').slice(1)) {
+          if (line.startsWith('+')) changed.added++
+          else if (line.startsWith('-')) changed.removed++
+        }
+      }
+    }
+  }
+  return turns.map(({ byPath, ...t }) => ({
+    ...t,
+    agentMessages: t.agentMessages.trim(),
+    filesRead: [...new Set(t.filesRead)],
+    files: t.files.map(({ hunks, ...f }) => (SECRET_FILE.test(f.path) ? { ...f, diff: '', isSecret: true } : { ...f, diff: hunks.join('\n') })),
+  }))
+}
+
+const TRANSCRIPT_NOT_REVIEWED = { state: 'skipped', reason: 'Not reviewed yet.' }
+
 /** Opens the system folder picker where Obsidian allows it; undefined when it cannot. */
 function pickFolder() {
   try {
@@ -381,6 +523,9 @@ class RearviewPlugin extends Plugin {
     this.gitTimers = []
     /** Projects whose Git status is being read right now. */
     this.gitBusy = new Set()
+    /** Projects whose transcripts are being read right now, and root -> { dir, files } of what was read. */
+    this.transcriptBusy = new Set()
+    this.transcriptCache = new Map()
     /** commit sha -> its changed files */
     this.commitFiles = new Map()
 
@@ -408,15 +553,18 @@ class RearviewPlugin extends Plugin {
   watchProjects() {
     this.unwatch()
     this.projects.clear()
+    this.transcriptCache.clear()
     for (const root of this.settings.projects) {
       const file = path.join(root, DATA_DIR, 'turns.json')
       const listener = () => this.loadProject(root, true)
       fs.watchFile(file, { interval: WATCH_MS }, listener)
       this.watched.push({ file, listener })
-      this.projects.set(root, { root, turns: [], error: 'Loading…', git: null })
+      this.projects.set(root, { root, turns: [], legacyTurns: [], transcriptTurns: null, error: 'Loading…', git: null })
       this.loadProject(root, false)
       this.pollGit(root)
       this.gitTimers.push(window.setInterval(() => this.pollGit(root), GIT_POLL_MS))
+      this.loadTranscripts(root, false)
+      this.gitTimers.push(window.setInterval(() => this.loadTranscripts(root, true), TRANSCRIPT_POLL_MS))
     }
     this.refresh()
   }
@@ -486,20 +634,80 @@ class RearviewPlugin extends Plugin {
     await this.openAll()
   }
 
+  /** Reads turns.json, which Rearview's Claude Code plugin writes, for the reviews it already holds. */
   async loadProject(root, isUpdate) {
-    const before = this.projects.get(root)
-    let project
+    const project = this.projects.get(root)
+    if (!project) return
     try {
       const data = JSON.parse(await fs.promises.readFile(path.join(root, DATA_DIR, 'turns.json'), 'utf8'))
-      project = { ...before, root, turns: Array.isArray(data.turns) ? data.turns : [], error: null }
-    } catch (error) {
-      const reason = error.code === 'ENOENT' ? 'No Claude Code turns yet. Rearview writes them when a session starts in this project.' : `Could not read turns.json: ${error.message}`
-      project = { ...before, root, turns: [], error: reason }
+      project.legacyTurns = Array.isArray(data.turns) ? data.turns : []
+    } catch {
+      project.legacyTurns = []
     }
-    this.projects.set(root, project)
+    await this.composeTurns(root, isUpdate)
+  }
+
+  /** Re-reads the project's session transcripts that changed since the last look (the newest dozen sessions). */
+  async loadTranscripts(root, isUpdate) {
+    if (this.transcriptBusy.has(root)) return
+    this.transcriptBusy.add(root)
+    try {
+      let cache = this.transcriptCache.get(root)
+      if (!cache) {
+        cache = { dir: await findTranscriptDir(root), files: new Map() }
+        this.transcriptCache.set(root, cache)
+      }
+      if (!cache.dir) {
+        // No sessions yet: a cheap look for the folder Claude Code makes when the first one starts.
+        const named = path.join(claudeProjectsDir(), root.replace(/[^A-Za-z0-9]/g, '-'))
+        if (!fs.existsSync(named)) return
+        cache.dir = named
+      }
+      const stats = []
+      for (const name of await fs.promises.readdir(cache.dir).catch(() => [])) {
+        if (!name.endsWith('.jsonl')) continue
+        const stat = await fs.promises.stat(path.join(cache.dir, name)).catch(() => null)
+        if (stat) stats.push({ name, stat })
+      }
+      stats.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)
+      let changed = false
+      for (const { name, stat } of stats.slice(0, MAX_TRANSCRIPT_FILES)) {
+        const held = cache.files.get(name)
+        if (held && held.mtimeMs === stat.mtimeMs && held.size === stat.size) continue
+        const text = await fs.promises.readFile(path.join(cache.dir, name), 'utf8').catch(() => '')
+        cache.files.set(name, { mtimeMs: stat.mtimeMs, size: stat.size, turns: parseTranscript(text, root) })
+        changed = true
+      }
+      const project = this.projects.get(root)
+      if (!changed || !project) return
+      project.transcriptTurns = [...cache.files.values()].flatMap(file => file.turns).sort((a, b) => a.startedAt - b.startedAt).slice(-MAX_TRANSCRIPT_TURNS)
+      await this.composeTurns(root, isUpdate)
+    } finally {
+      this.transcriptBusy.delete(root)
+    }
+  }
+
+  /**
+   * A project's turns: rebuilt from its Claude Code transcripts when it has any, else from turns.json.
+   * A review turns.json already holds stays with its turn: the same request, finished within five minutes.
+   */
+  async composeTurns(root, isUpdate) {
+    const project = this.projects.get(root)
+    if (!project) return
+    const before = project.turns || []
+    const legacy = project.legacyTurns || []
+    if (project.transcriptTurns && project.transcriptTurns.length) {
+      project.turns = project.transcriptTurns.map(turn => {
+        const match = legacy.find(l => l.review && l.review.state === 'done' && l.request.trim() === turn.request && Math.abs(l.finishedAt - turn.finishedAt) < 5 * 60 * 1000)
+        return match ? { ...turn, review: match.review } : turn
+      })
+    } else {
+      project.turns = legacy
+    }
+    project.error = project.turns.length ? null : 'No Claude Code sessions in this folder yet. Turns appear here as soon as one starts.'
     const latest = project.turns[project.turns.length - 1]
-    const isNewTurn = isUpdate && latest && !(before && before.turns.some(t => t.id === latest.id))
-    if (isNewTurn) {
+    if (latest) this.mapCache.delete(latest.id)
+    if (isUpdate && latest && !before.some(t => t.id === latest.id)) {
       this.selected = { root, turnId: latest.id }
       this.trace = null
       if (this.settings.openOnNewTurn) await this.openAll()
@@ -1270,4 +1478,4 @@ class RearviewSettingTab extends PluginSettingTab {
 }
 
 module.exports = RearviewPlugin
-module.exports.testing = { parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
+module.exports.testing = { parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
