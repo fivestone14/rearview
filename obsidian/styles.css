@@ -255,7 +255,7 @@
 .rv .rv-project-toggle:focus-visible { box-shadow: 0 0 0 2px var(--background-modifier-border-focus); outline: none; }
 .rv .rv-chevron { display: flex; flex: none; color: var(--text-muted); transition: transform 0.12s ease; }
 .rv .rv-chevron svg { width: 14px; height: 14px; }
-.rv .rv-project.is-open .rv-chevron { transform: rotate(90deg); }
+.rv .rv-project.is-open > .rv-project-top .rv-chevron { transform: rotate(90deg); }
 .rv .rv-project-names { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
 .rv .rv-project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-ui-medium); font-weight: 600; color: var(--text-normal); }
 .rv .rv-project-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-monospace); font-size: 11px; color: var(--text-muted); }
@@ -271,6 +271,10 @@
 .rv .rv-change-name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .rv .rv-change-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: var(--text-muted); }
 .rv .rv-project-body .rv-section { white-space: nowrap; }
+.rv .rv-section-toggle { justify-content: flex-start; width: calc(100% - 4px); height: auto; padding: 4px 2px; border: 0; border-radius: 6px; background: transparent; box-shadow: none; cursor: pointer; }
+.rv .rv-section-toggle:hover { background: var(--background-modifier-hover); }
+.rv .rv-section-toggle .rv-chevron svg { width: 12px; height: 12px; }
+.rv .rv-chevron.is-open { transform: rotate(90deg); }
 .rv .rv-project-body .rv-item-title { display: block; }
 .rv .rv-project-body .rv-item-meta .rv-hash { color: var(--text-accent); }
 

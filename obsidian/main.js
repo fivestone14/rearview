@@ -106,8 +106,15 @@ function gapsMessage(result) {
   )
 }
 
-/** The sidebar shows this many of a project's newest commits until "Show all". */
+/** The sidebar shows this many of a project's newest commits, and of its turns once opened, until "Show all". */
 const SIDEBAR_COMMITS = 3
+const SIDEBAR_TURNS = 5
+
+/** A turn's review score as a small badge (`3/4`), or null when it has none worth showing. */
+function scoreBadge(turn) {
+  const s = score(turn)
+  return /^\d+\/\d+$/.test(s.label) ? s : null
+}
 
 /** How each kind of uncommitted change is marked in the sidebar: a letter, as `git status` uses, and a colour. */
 const CHANGE_KINDS = {
@@ -836,7 +843,7 @@ class RearviewPlugin extends Plugin {
     this.gitBusy = new Set()
     /** Projects whose transcripts are being read right now, and root -> { dir, files } of what was read. */
     this.transcriptBusy = new Set()
-    /** Commit lists opened with "Show all", as `<root>:commits`. */
+    /** Sidebar lists opened: `<root>:commits` and `<root>:turns-all` ("Show all"), `<root>:turns` (the turns list itself). */
     this.expanded = new Set()
     /** Projects closed in the sidebar, by root. */
     this.collapsed = new Set()
@@ -1439,6 +1446,54 @@ class TurnsView extends ItemView {
       more.addEventListener('click', () => {
         if (isAll) this.plugin.expanded.delete(commitsKey)
         else this.plugin.expanded.add(commitsKey)
+        this.render()
+      })
+    }
+
+    this.renderTurns(body, project, shown)
+  }
+
+  /**
+   * Claude's turns for the project, closed by default so the card leads with the project's own changes.
+   * Opened, it lists the newest turns; "Show all" lists every one.
+   */
+  renderTurns(body, project, shown) {
+    const turns = project.turns
+    if (turns.length === 0) return
+    const openKey = `${project.root}:turns`
+    const allKey = `${project.root}:turns-all`
+    const isOpen = this.plugin.expanded.has(openKey)
+    const toggle = body.createEl('button', { cls: 'rv-section rv-section-toggle', attr: { 'aria-expanded': String(isOpen) } })
+    setIcon(toggle.createEl('span', { cls: `rv-chevron${isOpen ? ' is-open' : ''}` }), 'chevron-right')
+    toggle.createEl('span', { text: 'Claude turns' })
+    toggle.createEl('span', { cls: 'rv-section-count', text: String(turns.length) })
+    toggle.addEventListener('click', () => {
+      if (isOpen) this.plugin.expanded.delete(openKey)
+      else this.plugin.expanded.add(openKey)
+      this.render()
+    })
+    if (!isOpen) return
+
+    const isAll = this.plugin.expanded.has(allKey)
+    const newestFirst = turns.map((turn, i) => ({ turn, n: i + 1 })).reverse()
+    for (const { turn, n } of newestFirst.slice(0, isAll ? Infinity : SIDEBAR_TURNS)) {
+      const isShown = !!shown && shown.turn.id === turn.id && shown.project.root === project.root
+      const button = body.createEl('button', { cls: `rv-item${isShown ? ' is-active' : ''}`, attr: { title: titleOf(turn.request) } })
+      if (isShown) button.setAttr('aria-current', 'true')
+      const top = button.createDiv({ cls: 'rv-item-top' })
+      top.createEl('span', { cls: 'rv-item-title', text: titleOf(turn.request) })
+      const score = scoreBadge(turn)
+      if (score) top.createEl('span', { cls: `rv-badge rv-${score.tone}`, text: score.label })
+      const meta = button.createDiv({ cls: 'rv-item-meta' })
+      meta.createEl('span', { text: [`T${n}`, turn.isSteer ? 'steer' : '', turn.files.length ? filesLabel(turn) : ''].filter(Boolean).join(' · ') })
+      meta.createEl('span', { cls: 'rv-item-time', text: relativeTime(turn.finishedAt) })
+      button.addEventListener('click', () => this.plugin.select(project.root, turn.id))
+    }
+    if (turns.length > SIDEBAR_TURNS) {
+      const more = body.createEl('button', { cls: 'rv-more-link', text: isAll ? 'Show fewer' : `Show all ${turns.length} turns` })
+      more.addEventListener('click', () => {
+        if (isAll) this.plugin.expanded.delete(allKey)
+        else this.plugin.expanded.add(allKey)
         this.render()
       })
     }
