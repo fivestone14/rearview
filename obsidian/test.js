@@ -229,7 +229,46 @@ test('flags go on the file their evidence points to, each with a message to guid
   const [extra] = t.flagsFor('b.css', result)
   assert.strictEqual(extra.kind, 'not asked for')
   assert.match(extra.draft, /Revert "Changed radius" in b\.css/)
-  assert.strictEqual(t.thenLine(null, 'a.ts', 'b.ts', [{ from: 'b.ts', to: 'a.ts' }]), 'b.ts uses a.ts.')
+  const linked = new Set(['a.ts', 'b.ts'])
+  assert.strictEqual(t.thenLine(null, 'a.ts', 'b.ts', [{ from: 'b.ts', to: 'a.ts' }], linked), 'b.ts uses a.ts.')
+  // A file no import links to the others gets no "Then" line, even when the review wrote one.
+  assert.strictEqual(t.thenLine({ next: 'README.md describes these tests.' }, 'b.ts', 'README.md', [{ from: 'b.ts', to: 'a.ts' }], linked), '')
+})
+
+test('changes are reviewed by themselves only once the files and Claude have both gone quiet, and once per version', () => {
+  const now = Date.now()
+  const files = [{ path: 'a.ts', change: 'edited', diff: '+a', added: 1, removed: 0 }]
+  const started = []
+  const make = ({ changedAt, workedAt, review }) => {
+    const plugin = Object.create(Rearview.prototype)
+    const root = '/p'
+    Object.assign(plugin, {
+      settings: { review: { auto: true } },
+      startedAt: now - 10 * 60000,
+      reviews: review ? { [`wt:${root}`]: review } : {},
+      startReview: (r, id) => started.push(id),
+      projects: new Map([[root, {
+        root,
+        turns: [{ id: 't', sessionId: 's', request: 'Do it', startedAt: workedAt - 1000, finishedAt: workedAt, files: [{ path: 'a.ts' }], filesRead: [], agentMessages: '' }],
+        git: { isRepo: true, changedAt, commits: [], worktree: { id: `wt:${root}`, isWorktree: true, files } },
+      }]]),
+    })
+    return plugin
+  }
+  const quiet = now - 60000
+  const run = options => {
+    started.length = 0
+    make(options).autoReview()
+    return started.length
+  }
+  assert.strictEqual(run({ changedAt: 0, workedAt: quiet }), 0, 'changes found at start-up wait for a click')
+  assert.strictEqual(run({ changedAt: now - 5000, workedAt: quiet }), 0, 'files still changing')
+  assert.strictEqual(run({ changedAt: quiet, workedAt: now - 5000 }), 0, 'Claude still working')
+  assert.strictEqual(run({ changedAt: quiet, workedAt: quiet }), 1, 'both quiet')
+  const signature = t.changeSignature(files)
+  assert.strictEqual(run({ changedAt: quiet, workedAt: quiet, review: { state: 'done', signature } }), 0, 'already reviewed')
+  assert.strictEqual(run({ changedAt: quiet, workedAt: quiet, review: { state: 'failed', signature } }), 0, 'a failed review is not retried by itself')
+  assert.strictEqual(run({ changedAt: quiet, workedAt: quiet, review: { state: 'done', signature: 'older' } }), 1, 'the files moved on')
 })
 
 // ---------- Git ----------

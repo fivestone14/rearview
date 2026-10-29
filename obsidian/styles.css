@@ -335,7 +335,8 @@
 .rv .rv-decided { font-size: var(--font-ui-small); color: var(--text-muted); }
 .rv .rv-file { margin-bottom: 0; }
 .rv .rv-then { display: flex; flex-wrap: wrap; gap: 6px; margin-left: 26px; padding: 9px 0 9px 14px; border-left: 2px solid rgba(var(--interactive-accent-rgb), 0.45); font-size: var(--font-ui-small); color: var(--text-muted); }
-.rv .rv-then.is-quiet { padding: 6px 0; }
+.rv .rv-then.is-quiet { padding: 6px 0; border-left-color: transparent; }
+.rv .rv-also { margin: 20px 0 10px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
 .rv .rv-then-label { font-weight: 700; color: var(--text-accent); }
 .rv .rv-leftovers { margin-top: 16px; }
 .rv .rv-leftovers .rv-h:first-child { margin-top: 0; }

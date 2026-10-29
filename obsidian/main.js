@@ -532,7 +532,7 @@ const REVIEW_SYSTEM = `You review the changes an AI coding agent made to a proje
 Reply with one JSON object only, no prose, in exactly this shape:
 {
   "requirements": [{ "text": "short restatement", "quote": "the person's own words", "status": "done|partly|missed", "finding": "one plain sentence", "evidence": [{ "file": "path", "line": 12 }] }],
-  "files": [{ "file": "path", "did": "one plain sentence: what the agent did in this file", "effect": "one plain sentence: what this does to the app", "next": "one plain sentence on how this file leads to the next one in FILES IN ORDER, or empty" }],
+  "files": [{ "file": "path", "did": "one plain sentence: what the agent did in this file", "effect": "one plain sentence: what this does to the app", "next": "one plain sentence on how this file leads to the next one in FILES IN ORDER; empty unless the two really work together" }],
   "links": [{ "from": "path", "to": "path", "how": "at most 8 plain words" }],
   "notes": [{ "file": "path", "line": 12, "why": "plain English, at most 25 words", "source": "stated|inferred|none", "symbols": ["nameInThatLine"] }],
   "steps": [{ "kind": "plan|explored|decision|shortcut|unrequested|skipped", "title": "short", "why": "one plain sentence", "source": "stated|inferred|none", "evidence": [{ "file": "path", "line": 12 }] }],
@@ -1765,8 +1765,12 @@ function flagsFor(file, result) {
   return flags
 }
 
-/** The "Then ↓" line between two cards: the review's sentence, or which of the two uses the other. */
-function thenLine(info, from, to, edges) {
+/**
+ * The "Then ↓" line between two cards: the review's sentence, or which of the two uses the other. Only files
+ * linked by imports to another changed file (`linked`) get one, so the story never claims a link that is not there.
+ */
+function thenLine(info, from, to, edges, linked) {
+  if (!linked.has(from) || !linked.has(to)) return ''
   if (info && info.next) return info.next
   if (edges.some(e => e.from === to && e.to === from)) return `${path.basename(to)} uses ${path.basename(from)}.`
   if (edges.some(e => e.from === from && e.to === to)) return `${path.basename(from)} uses ${path.basename(to)}.`
@@ -1936,6 +1940,8 @@ function renderChange(el, shown, plugin) {
   const edges = map ? map.edges : []
   const order = buildOrder(change.files.map(f => f.path), edges)
   const shownPaths = new Set(order)
+  // Changed files linked by imports to another changed file; buildOrder puts the rest after them.
+  const linked = new Set(edges.filter(e => shownPaths.has(e.from) && shownPaths.has(e.to)).flatMap(e => [e.from, e.to]))
 
   renderRequest(el, change, result, plugin)
   renderApproach(el, change, result, shownPaths, project, plugin)
@@ -1950,13 +1956,16 @@ function renderChange(el, shown, plugin) {
     const file = byPath.get(filePath)
     const isOutside = change.outside.includes(filePath) && change.turns.length > 0
     renderFileCard(el, { file, step: i + 1, info: infoOf.get(filePath), isOutside, change, result, map, linkHow, project, plugin })
-    if (i < order.length - 1) {
-      const line = thenLine(infoOf.get(filePath), filePath, order[i + 1], edges)
-      const then = el.createDiv({ cls: `rv-then${line ? '' : ' is-quiet'}` })
-      if (line) {
-        then.createEl('span', { cls: 'rv-then-label', text: 'Then ↓' })
-        then.createEl('span', { text: line })
-      }
+    if (i === order.length - 1) return
+    if (linked.has(filePath) && !linked.has(order[i + 1])) {
+      el.createDiv({ cls: 'rv-also', text: 'Also changed, not linked by imports to the files above' })
+      return
+    }
+    const line = thenLine(infoOf.get(filePath), filePath, order[i + 1], edges, linked)
+    const then = el.createDiv({ cls: `rv-then${line ? '' : ' is-quiet'}` })
+    if (line) {
+      then.createEl('span', { cls: 'rv-then-label', text: 'Then ↓' })
+      then.createEl('span', { text: line })
     }
   })
 
