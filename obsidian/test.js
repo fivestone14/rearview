@@ -319,6 +319,59 @@ test('after a review each change says what and why, and every flag is gathered u
   assert.deepStrictEqual(todo.map(f => [f.kind, f.file]), [['partly', 'a.ts'], ['missed', ''], ['guardrail', '']])
 })
 
+// A small stand-in for Obsidian's elements, enough to draw a view and press keys in it.
+class El {
+  constructor(tag, opts = {}) {
+    Object.assign(this, { tag, cls: opts.cls || '', text: opts.text || '', attr: opts.attr || {}, id: (opts.attr || {}).id || '', children: [], listeners: {}, value: '', parent: null })
+  }
+  createEl(tag, opts) { const child = new El(tag, opts); child.parent = this; this.children.push(child); return child }
+  createDiv(opts) { return this.createEl('div', opts) }
+  empty() { this.children = [] }
+  addClass() {}
+  toggleClass() {}
+  setText(text) { this.text = text }
+  addEventListener(type, fn) { this.listeners[type] = fn }
+  blur() { if (global.document.activeElement === this) global.document.activeElement = null }
+  all() { return [this, ...this.children.flatMap(c => c.all())] }
+  contains(el) { return this.all().includes(el) }
+}
+
+test('Trace starts from a typed name, and the right sidebar does not redraw while the name is being typed', () => {
+  global.document = { activeElement: null }
+  const traced = []
+  const plugin = { panel: 'trace', trace: null, current: () => ({ project: { root: '/p' }, change: { files: [] } }), runTrace: (root, name) => traced.push([root, name]) }
+  const view = Object.create(t.SideView.prototype)
+  Object.assign(view, { plugin, contentEl: new El('div') })
+  view.render()
+  const input = view.contentEl.all().find(e => e.id === 'rv-trace-input')
+  assert.ok(input, 'the Trace tab has a name box')
+
+  // Typing: a redraw (Git and transcripts poll every few seconds) must leave the box where it is.
+  global.document.activeElement = input
+  input.value = 'useTheme'
+  view.render()
+  assert.ok(view.contentEl.contains(input), 'the box survives a redraw while focused')
+
+  // Enter: the box lets go of focus first, so the results can be drawn, then the trace runs.
+  input.listeners.keydown({ key: 'Enter' })
+  assert.strictEqual(global.document.activeElement, null)
+  assert.deepStrictEqual(traced, [['/p', 'useTheme']])
+  input.value = '   '
+  input.listeners.keydown({ key: 'Enter' })
+  assert.strictEqual(traced.length, 1, 'an empty name traces nothing')
+  view.render()
+  assert.ok(!view.contentEl.contains(input), 'once the box lets go, the sidebar redraws')
+})
+
+test('Trace refuses anything but a plain name, so nothing reaches git grep as an option or a pattern', () => {
+  const plugin = Object.create(Rearview.prototype)
+  Object.assign(plugin, { trace: null, panel: 'links', refresh() {}, ensureLeaf() {} })
+  for (const name of ['a b', '--output=x', '.*', '']) {
+    plugin.runTrace('/p', name)
+    assert.strictEqual(plugin.trace, null, name)
+  }
+})
+
 // ---------- Git ----------
 
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, stdio: 'pipe' })
