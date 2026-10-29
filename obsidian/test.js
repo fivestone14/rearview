@@ -191,7 +191,7 @@ test('a review knows when the changes moved on since it ran', () => {
   assert.notStrictEqual(t.changeSignature(files), t.changeSignature([{ ...files[0], diff: '@@ -1 +1 @@\n-a\n+c' }]))
 })
 
-test('the review is asked about files in story order, told which ones have no Claude edit recorded, and its new fields are read', () => {
+test('the review is asked about files in story order, told which ones have no Claude change recorded, and its new fields are read', () => {
   const prompt = t.reviewPrompt({
     requests: ['Add dark mode'],
     files: [{ path: 'b.ts', change: 'edited', diff: '+b' }, { path: 'a.ts', change: 'new', diff: '+a' }],
@@ -203,7 +203,7 @@ test('the review is asked about files in story order, told which ones have no Cl
     agentMessages: '',
   })
   assert.match(prompt, /FILES IN ORDER:\na\.ts\nb\.ts/)
-  assert.match(prompt, /NO AGENT EDIT RECORDED[^\n]*:\nb\.ts/)
+  assert.match(prompt, /NO AGENT CHANGE RECORDED[^\n]*:\nb\.ts/)
   assert.match(prompt, /CONNECTIONS:\nb\.ts -> a\.ts/)
   assert.match(prompt, /GUARDRAILS:\nAdd tests/)
   assert.ok(prompt.indexOf('### a.ts') < prompt.indexOf('### b.ts'))
@@ -219,16 +219,7 @@ test('the review is asked about files in story order, told which ones have no Cl
   assert.deepStrictEqual(t.resultOf({ state: 'done', result: { requirements: [], notes: [], steps: [] } }).links, [])
 })
 
-test('flags go on the file their evidence points to, each with a message to guide Claude', () => {
-  const result = {
-    requirements: [{ id: 'R1', text: 'Toggle', status: 'done', evidence: [{ file: 'a.ts' }] }, { id: 'R2', text: 'Follow system', status: 'partly', finding: 'Only at start', evidence: [{ file: 'a.ts', line: 4 }] }],
-    steps: [{ kind: 'unrequested', title: 'Changed radius', why: '', evidence: [{ file: 'b.css' }] }, { kind: 'decision', title: 'Shared store', evidence: [{ file: 'a.ts' }] }],
-    violations: [],
-  }
-  assert.deepStrictEqual(t.flagsFor('a.ts', result).map(f => [f.kind, f.text]), [['partly', 'R2 Follow system: Only at start']])
-  const [extra] = t.flagsFor('b.css', result)
-  assert.strictEqual(extra.kind, 'not asked for')
-  assert.match(extra.draft, /Revert "Changed radius" in b\.css/)
+test('a Then line is drawn only between files linked by imports', () => {
   const linked = new Set(['a.ts', 'b.ts'])
   assert.strictEqual(t.thenLine(null, 'a.ts', 'b.ts', [{ from: 'b.ts', to: 'a.ts' }], linked), 'b.ts uses a.ts.')
   // A file no import links to the others gets no "Then" line, even when the review wrote one.
@@ -306,17 +297,10 @@ test('one file can be reviewed alone, and its card draws on whichever review fin
   assert.strictEqual(plugin.reviews['wt:/p'], undefined, 'the whole change keeps its own review')
 })
 
-test('after a review each change says what and why, and every flag is gathered under Still to do with its file', () => {
+test('after a review each change says what and why', () => {
   const review = t.parseReview(JSON.stringify({ files: [{ file: 'a.ts', did: 'Did it.', why: 'Because.', changes: [{ title: 'One', from: 1, what: 'Does one.', why: 'Needed for two.' }] }] }))
   assert.strictEqual(review.files[0].why, 'Because.')
   assert.strictEqual(review.files[0].changes[0].why, 'Needed for two.')
-  const result = {
-    requirements: [{ id: 'R1', text: 'Tests', status: 'missed', finding: 'None', evidence: [] }, { id: 'R2', text: 'Toggle', status: 'partly', finding: 'Half', evidence: [{ file: 'a.ts', line: 3 }] }],
-    steps: [], violations: [{ guardrail: 'Reuse helpers', finding: 'New helper', evidence: [] }],
-  }
-  const fromCards = t.flagsFor('a.ts', result).map(f => ({ ...f, file: 'a.ts' }))
-  const todo = t.stillToDo(fromCards, result, new Set(['a.ts']))
-  assert.deepStrictEqual(todo.map(f => [f.kind, f.file]), [['partly', 'a.ts'], ['missed', ''], ['guardrail', '']])
 })
 
 // A small stand-in for Obsidian's elements, enough to draw a view and press keys in it.
@@ -370,6 +354,32 @@ test('Trace refuses anything but a plain name, so nothing reaches git grep as an
     plugin.runTrace('/p', name)
     assert.strictEqual(plugin.trace, null, name)
   }
+})
+
+test('a file a shell command of Claude wrote to counts as Claude\'s, but a file it only read does not', () => {
+  assert.ok(t.commandWrites("python3 - <<'EOF'\np='obsidian/main.js'; s=open(p).read()\nopen(p,'w').write(s)\nEOF", 'obsidian/main.js'))
+  assert.ok(t.commandWrites("echo hi > README.md", 'README.md'))
+  assert.ok(t.commandWrites("sed -i '' 's/a/b/' obsidian/styles.css", 'obsidian/styles.css'))
+  assert.ok(t.commandWrites("cp /tmp/x.js obsidian/main.js", 'obsidian/main.js'))
+  assert.ok(!t.commandWrites("cat README.md", 'README.md'))
+  assert.ok(!t.commandWrites("git diff obsidian/main.js 2>/dev/null", 'obsidian/main.js'))
+  assert.ok(!t.commandWrites("cp obsidian/main.js ~/vault/main.js", 'obsidian/main.js'), 'copying a file away does not write it')
+  assert.ok(!t.commandWrites("grep -n x obsidian/main.js > /tmp/out", 'obsidian/main.js'), 'a redirect elsewhere does not write it')
+  const turn = { id: 't', startedAt: 10, finishedAt: 20, files: [{ path: 'a.ts' }], commands: ["python3 -c \"open('README.md','w').write('x')\"", 'cat b.ts'] }
+  const { turns, byClaude, byCommand } = t.matchTurns([turn], [{ path: 'a.ts' }, { path: 'README.md' }, { path: 'b.ts' }], 0)
+  assert.strictEqual(turns.length, 1)
+  assert.deepStrictEqual([...byClaude], ['a.ts'])
+  assert.deepStrictEqual([...byCommand], ['README.md'], 'b.ts was only read, so it stays the person\'s')
+  const onlyCommand = { id: 'c', startedAt: 10, finishedAt: 20, files: [], commands: ['echo x >> b.ts'] }
+  assert.deepStrictEqual(t.matchTurns([onlyCommand], [{ path: 'b.ts' }], 0).turns.map(x => x.id), ['c'], 'a turn that only ran commands is still found')
+})
+
+test('the transcript keeps Claude\'s shell commands, with the project folder taken off their paths', () => {
+  const text = [
+    row({ type: 'user', uuid: 'u1', sessionId: 's', timestamp: '2026-10-27T10:00:00Z', origin: { kind: 'human' }, message: { content: 'Fix it' } }),
+    row({ type: 'assistant', timestamp: '2026-10-27T10:00:01Z', message: { content: [{ type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'echo x > /p/src/a.ts' } }] } }),
+  ].join('\n')
+  assert.deepStrictEqual(t.parseTranscript(text, '/p')[0].commands, ['echo x > src/a.ts'])
 })
 
 // ---------- Git ----------

@@ -6,10 +6,9 @@ While Claude Code works on your project, Rearview shows what changed since your 
 
 ## What to expect
 
-- **Your changes, not a history.** Each project in the left sidebar shows its uncommitted changes and last commits, refreshed every few seconds. Rearview matches them to the Claude Code requests that made them (in the desktop app, the terminal or VS Code), so there is nothing to import, and files with no Claude edit on record are marked *no Claude edit recorded*.
-- **One story, top to bottom.** The main tab starts with what you asked, then shows each changed file as a numbered card, in the order they build on each other. A *Then ↓* line links each card to the next.
+- **Your changes, not a history.** Each project in the left sidebar shows its uncommitted changes and last commits, refreshed every few seconds. Rearview matches them to the Claude Code requests that made them (in the desktop app, the terminal or VS Code), through Claude's edits and the shell commands it ran, so there is nothing to import.
+- **One story, top to bottom.** The main tab starts with what you asked, then lists each changed file as a numbered card, in the order they build on each other. Cards start closed, so every file involved shows at once; open one to read it, and a *Then ↓* line links it to the next.
 - **What Claude did, and why.** Each card leads with what Claude did in that file, in plain words. A file with two or more real changes lists each one, numbered, with what it does and why; its code stays closed until you open it, and each change is marked by its number in the code.
-- **Still to do.** Parts of your request that are partly done or missed, shortcuts, changes nobody asked for, and anything against a guardrail are gathered under the cards, each naming its file, with **Guide Claude ›**.
 - **How the files connect.** The right sidebar lists every file around the change in flow order, with lines from the chosen file to what it uses and what uses it. *Impact* says what each change does to the app, which files the change reaches without editing them, and where each part of your request stands.
 - **Reviews with any model.** Uncommitted changes are reviewed by themselves once Claude stops for a little while, or with **Review**. Use a tool you are already signed in to (Claude Code, OpenAI Codex, Gemini CLI), a hosted API with your key (Anthropic, OpenAI, Google Gemini, OpenRouter, or any OpenAI-compatible address), or a model on your own computer (Ollama, LM Studio).
 - **Trace.** Type a name in the right sidebar's *Trace* tab to see where it is defined and used, without leaving the review.
@@ -49,7 +48,7 @@ To update Rearview later, copy the three files again and restart Obsidian.
 2. **Add your project.** Click **+** beside *Projects* and choose the project folder. Rearview checks the connection step by step: the folder, Git, the repository, the branch and last commit, the GitHub remote and whether it answers, and how far the branch is ahead or behind. A folder that is not in a Git repository is refused with the fix to make.
 3. **Work in Claude Code as usual.** The project's uncommitted changes show in the main tab as Claude edits files. Rearview comes forward by itself when you send Claude a request (switch this off in its settings).
 4. **Review the changes.**
-   - Read the main tab top to bottom: your request, then each file in build order. Each card says what Claude did and why, and *Still to do* shows what needs your eyes.
+   - Read the main tab top to bottom: your request, then each file in build order. Open a card to see what Claude did there and why; the request card shows which parts of your request are done.
    - In the right sidebar, click any file to see what it uses and what uses it, or open **Impact** to see what the changes do to the app.
    - Use **Trace** on any name you want to follow.
 5. **Guide Claude.** Click **Guide Claude ›** on a flag to draft a message, or write your own in the bar under the changes, and switch on the guardrails you want. **Send to Claude** continues the conversation in the background (`claude -p --resume`): Claude can edit files, and shell commands it asks for are refused, since nobody is there to approve them. Its edits show up as the changes move. Or press **Copy** and paste the message into Claude Code yourself.
@@ -77,7 +76,7 @@ Click **Test** to check the connection. Small local models sometimes answer in a
 
 ## Limits
 
-- **Edits made with shell commands** leave no diff in Claude Code's transcripts, so Rearview cannot tell they came from Claude and marks them *no Claude edit recorded*. Their diffs still show.
+- **Edits made with shell commands** leave no diff in Claude Code's transcripts. Rearview credits a file to Claude when one of its commands clearly writes to it (a redirect, `sed -i`, a script that writes files, a copy onto it); a command that only reads a file does not count, so an unusual write can go unnoticed.
 - **The newest sessions are read.** Rearview matches changes against a project's twelve most recent Claude Code sessions.
 - **Connections and Trace are text search.** Imports are understood for relative JavaScript/TypeScript and Python imports; Trace uses `git grep`.
 

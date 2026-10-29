@@ -142,16 +142,39 @@ function changeSignature(files) {
 }
 
 /**
- * The Claude Code turns behind a set of changed files: those that edited one of them and ran between `since`
- * and `until` (ms). `byClaude` holds the changed files those turns edited. Any other changed file has no Claude
- * edit recorded: the person changed it, or a command did (a shell edit leaves no diff in the transcript), so the
- * review must not credit it to Claude.
+ * Whether a shell command writes to a file (a path relative to the project): a redirect into it, an in-place
+ * sed or perl, tee, a copy or move onto it, a git checkout or restore of it, or a script that names it and
+ * opens a file for writing. A command that only reads a file (cat, grep, git diff) does not count, so a file
+ * the person changed is not credited to Claude because Claude looked at it.
+ */
+function commandWrites(command, file) {
+  if (!command.includes(file)) return false
+  const f = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const writes = [
+    new RegExp(`(^|[^0-9&>-])>>?\\s*['"]?(\\./)?${f}(?![\\w./-])`),
+    new RegExp(`\\b(sed|perl)\\s+(-\\w+\\s+)*-\\w*i\\b[^;&|]*${f}`),
+    new RegExp(`\\btee\\b[^;&|]*${f}`),
+    new RegExp(`\\b(cp|mv|install)\\b[^;&|\\n]*\\s['"]?(\\./)?${f}['"]?\\s*($|[;&|\\n])`),
+    new RegExp(`\\bgit\\s+(checkout|restore)\\b[^;&|]*${f}`),
+  ]
+  if (writes.some(pattern => pattern.test(command))) return true
+  // A script given inline (python, node, ruby…) that names the file and writes some file.
+  return /open\([^)]*['"][wa]\+?['"]|writeFileSync|writeFile\(|\.write_text\(|fs\.write|File\.write/.test(command)
+}
+
+/**
+ * The Claude Code turns behind a set of changed files: those that ran between `since` and `until` (ms) and
+ * edited one of them, or ran a shell command that wrote to one (a shell edit leaves no diff in the transcript).
+ * `byClaude` holds the files those turns edited, `byCommand` the others their commands wrote. Any other changed
+ * file has no Claude change on record: the person made it, so the review must not credit it to Claude.
  */
 function matchTurns(turns, files, since, until = Infinity) {
-  const paths = new Set(files.map(f => f.path))
-  const matched = turns.filter(t => t.finishedAt >= since && t.startedAt <= until && t.files.some(f => paths.has(f.path)))
-  const byClaude = new Set(matched.flatMap(t => t.files.map(f => f.path)).filter(p => paths.has(p)))
-  return { turns: matched, byClaude }
+  const paths = files.map(f => f.path)
+  const wroteByCommand = t => paths.filter(p => (t.commands || []).some(c => commandWrites(c, p)))
+  const matched = turns.filter(t => t.finishedAt >= since && t.startedAt <= until && (t.files.some(f => paths.includes(f.path)) || wroteByCommand(t).length > 0))
+  const byClaude = new Set(matched.flatMap(t => t.files.map(f => f.path)).filter(p => paths.includes(p)))
+  const byCommand = new Set(matched.flatMap(wroteByCommand).filter(p => !byClaude.has(p)))
+  return { turns: matched, byClaude, byCommand }
 }
 
 /**
@@ -382,6 +405,8 @@ const TRANSCRIPT_POLL_MS = 3000
 const MAX_TRANSCRIPT_TURNS = 60
 /** Only this many of a project's most recent session transcripts are read. */
 const MAX_TRANSCRIPT_FILES = 12
+/** A shell command is kept to this many characters for telling which files it wrote. */
+const MAX_COMMAND_CHARS = 20000
 /** Claude's tools that change a file. */
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
 
@@ -469,7 +494,7 @@ function parseTranscript(text, root) {
       const steered = isSteer(row)
       const request = (steered ? row.message.content.slice(STEER_PREFIX.length) : textOf(row.message.content)).trim()
       if (!request) continue
-      turn = { id: row.uuid, sessionId: row.sessionId, isSteer: steered, request, answer: '', agentMessages: '', endReason: 'answer', startedAt: Date.parse(row.timestamp) || 0, finishedAt: Date.parse(row.timestamp) || 0, filesRead: [], files: [], byPath: new Map() }
+      turn = { id: row.uuid, sessionId: row.sessionId, isSteer: steered, request, answer: '', agentMessages: '', endReason: 'answer', startedAt: Date.parse(row.timestamp) || 0, finishedAt: Date.parse(row.timestamp) || 0, filesRead: [], files: [], commands: [], byPath: new Map() }
       turns.push(turn)
       continue
     }
@@ -484,6 +509,8 @@ function parseTranscript(text, root) {
         } else if (block.type === 'tool_use') {
           toolInputs.set(block.id, block)
           if (block.name === 'Read' && block.input && block.input.file_path) turn.filesRead.push(relativeTo(root, block.input.file_path))
+          // Shell commands, with the project folder taken off their paths, to tell which files a command wrote.
+          if (block.name === 'Bash' && block.input && typeof block.input.command === 'string') turn.commands.push(block.input.command.split(`${root}/`).join('').slice(0, MAX_COMMAND_CHARS))
         }
       }
     }
@@ -540,7 +567,7 @@ Reply with one JSON object only, no prose, in exactly this shape:
 }
 Rules:
 - requirements: split the REQUESTS into each separate thing they ask for. Judge each only from the DIFFS.
-- files: one entry for every file in FILES IN ORDER, in that order. For files under NO AGENT EDIT RECORDED, say what changed; say the agent did it only when the AGENT MESSAGES show a command of its own changed that file.
+- files: one entry for every file in FILES IN ORDER, in that order. Files under CHANGED BY AN AGENT COMMAND are the agent's work, done with a shell command instead of an edit. For files under NO AGENT CHANGE RECORDED, say what changed, never that the agent did it.
 - changes: the non-trivial changes in each file (new functions, logic, wiring between files), in line order, at most 6. Skip imports, renames and one-line tweaks. from/to are line numbers in the new file. used says where in OTHER files this code is used, or what it uses there; only files from CONNECTIONS or FILES IN ORDER.
 - links: one entry for each pair in CONNECTIONS, saying how the first file uses the second.
 - notes: at most 25, most important first: every added import and every new call before anything else. Lines are line numbers in the new file.
@@ -566,7 +593,8 @@ function reviewPrompt(change) {
     `REQUESTS:\n${list(change.requests, '(none found: these changes may not come from the agent)')}`,
     `GUARDRAILS:\n${list(change.guardrails)}`,
     `FILES IN ORDER:\n${list(ordered.map(f => f.path))}`,
-    `NO AGENT EDIT RECORDED (the person's own edits, or a command the agent ran):\n${list(change.outside)}`,
+    `CHANGED BY AN AGENT COMMAND:\n${list(change.byCommand)}`,
+    `NO AGENT CHANGE RECORDED (the person's own edits):\n${list(change.outside)}`,
     `CONNECTIONS:\n${list((change.edges || []).map(e => `${e.from} -> ${e.to}`))}`,
     `FILES READ:\n${list(change.filesRead)}`,
     `AGENT MESSAGES:\n${capText(change.agentMessages || '(none)', MAX_REVIEW_MESSAGE_CHARS)}`,
@@ -980,6 +1008,8 @@ class RearviewPlugin extends Plugin {
     this.expanded = new Set()
     /** Projects closed in the sidebar, by root. */
     this.collapsed = new Set()
+    /** File cards opened in the main view (all start closed), as `<change id>:<path>`. */
+    this.openCards = new Set()
     /** File cards whose code is not in its default state (closed with a breakdown, open without), as `<change id>:<path>`. */
     this.toggledCode = new Set()
     /** The breakdown change picked, as `<change id>:<path>:<index>`, and whether line notes are hidden. */
@@ -1043,7 +1073,7 @@ class RearviewPlugin extends Plugin {
       until = item.finishedAt + 60000
     }
     const files = item.files || []
-    const { turns, byClaude } = matchTurns(project.turns || [], files, since, until)
+    const { turns, byClaude, byCommand } = matchTurns(project.turns || [], files, since, until)
     const signature = changeSignature(files)
     const review = this.reviews[item.id] || null
     return {
@@ -1059,7 +1089,8 @@ class RearviewPlugin extends Plugin {
       requests: [...new Set(turns.map(t => requestText(t.request)).filter(Boolean))],
       agentMessages: turns.map(t => t.agentMessages).filter(Boolean).join('\n\n'),
       filesRead: [...new Set(turns.flatMap(t => t.filesRead))],
-      outside: files.map(f => f.path).filter(p => !byClaude.has(p)),
+      byCommand: [...byCommand],
+      outside: files.map(f => f.path).filter(p => !byClaude.has(p) && !byCommand.has(p)),
       turns,
       lastWorkedAt: turns.length ? Math.max(...turns.map(t => t.finishedAt)) : 0,
       sessionId: turns.length ? turns[turns.length - 1].sessionId : null,
@@ -1408,6 +1439,8 @@ class RearviewPlugin extends Plugin {
   /** Makes a file the one the right sidebar is about, and brings its card into view when it is a changed file. */
   async showFile(file) {
     this.focus = file
+    const shown = this.current()
+    if (shown && shown.change.files.some(f => f.path === file)) this.openCards.add(`${shown.change.id}:${file}`)
     if (this.panel === 'trace') this.panel = 'links'
     const leaf = await this.openTurnView()
     this.refresh([TURN_VIEW, SIDE_VIEW])
@@ -1753,7 +1786,7 @@ class ProjectModal extends Modal {
 const STEP_LABELS = { plan: 'plan', explored: 'explored', decision: 'decision', shortcut: 'shortcut', unrequested: 'not asked for', skipped: 'skipped' }
 /** "How Claude went about it" shows this many steps until "Show all". */
 const APPROACH_STEPS = 3
-/** Steps that are problems; they become flags on the file their evidence points to. */
+/** Steps that are problems; "How Claude went about it" lists them first. */
 const FLAG_STEPS = ['shortcut', 'unrequested', 'skipped']
 /** How each kind of file on the Map is marked: a letter, as `git status` uses, and a colour. */
 const MAP_MARKS = {
@@ -1785,29 +1818,8 @@ function resultOf(review) {
 }
 
 const pointsAt = (evidence, file) => (evidence || []).some(e => e.file === file)
-const linesIn = (evidence, file) => (evidence || []).filter(e => e.file === file && e.line).map(e => e.line)
 /** Text that ends with a full stop, so a drafted message can go on after it. */
 const sentence = text => (text || '').trim().replace(/([^.!?])$/, '$1.')
-
-/** The flags on one file card: unfinished parts of the request, problem steps and broken guardrails whose evidence is in it. */
-function flagsFor(file, result) {
-  if (!result) return []
-  const flags = []
-  for (const r of result.requirements) {
-    if (r.status === 'done' || !pointsAt(r.evidence, file)) continue
-    flags.push({ kind: r.status, tone: STATUS_TONES[r.status], lines: linesIn(r.evidence, file), text: `${r.id} ${r.text}: ${r.finding}`, draft: `${r.id} "${r.text}" is ${r.status} in ${file}: ${sentence(r.finding)} Finish it.` })
-  }
-  for (const step of result.steps) {
-    if (!FLAG_STEPS.includes(step.kind) || !pointsAt(step.evidence, file)) continue
-    const draft = step.kind === 'unrequested' ? `Revert "${step.title}" in ${file} unless it is needed: I did not ask for it.` : `About "${step.title}" in ${file}: ${sentence(step.why)} Do this part properly.`
-    flags.push({ kind: STEP_LABELS[step.kind], tone: STEP_TONES[step.kind], lines: linesIn(step.evidence, file), text: [step.title, step.why].filter(Boolean).join('. '), draft })
-  }
-  for (const v of result.violations) {
-    if (!pointsAt(v.evidence, file)) continue
-    flags.push({ kind: 'guardrail', tone: 'red', lines: linesIn(v.evidence, file), text: `Goes against "${v.guardrail}": ${v.finding}`, draft: `In ${file} this goes against my guardrail "${v.guardrail}": ${sentence(v.finding)} Fix it.` })
-  }
-  return flags
-}
 
 /** A file gets a numbered breakdown only with at least this many non-trivial changes; below it the lead line says it all. */
 const BREAKDOWN_MIN = 2
@@ -2033,8 +2045,6 @@ function renderChange(el, shown, plugin) {
   renderApproach(el, change, result, shownPaths, project, plugin)
 
   const byPath = new Map(change.files.map(f => [f.path, f]))
-  const infoOf = new Map(result ? result.files.map(f => [f.file, f]) : [])
-  const cardFlags = []
   order.forEach((filePath, i) => {
     const file = byPath.get(filePath)
     const isOutside = change.outside.includes(filePath) && change.turns.length > 0
@@ -2049,13 +2059,14 @@ function renderChange(el, shown, plugin) {
       isStale: !!chosen && chosen === own && own.signature !== changeSignature([file]),
     }
     renderFileCard(el, { file, step: i + 1, info: fileInfo, isOutside, change, result: fileResult, ownState, map, project, plugin })
-    for (const flag of flagsFor(filePath, fileResult)) cardFlags.push({ ...flag, file: filePath })
     if (i === order.length - 1) return
     if (linked.has(filePath) && !linked.has(order[i + 1])) {
       el.createDiv({ cls: 'rv-also', text: 'Also changed, not linked by imports to the files above' })
       return
     }
-    const line = thenLine(infoOf.get(filePath), filePath, order[i + 1], edges, linked)
+    // Closed cards sit close together so every file shows at once; a card's "Then" line shows once it is open.
+    const isOpen = plugin.openCards.has(`${change.id}:${filePath}`)
+    const line = isOpen ? thenLine(fileInfo, filePath, order[i + 1], edges, linked) : ''
     const then = el.createDiv({ cls: `rv-then${line ? '' : ' is-quiet'}` })
     if (line) {
       then.createEl('span', { cls: 'rv-then-label', text: 'Then ↓' })
@@ -2063,7 +2074,7 @@ function renderChange(el, shown, plugin) {
     }
   })
 
-  renderLeftovers(el, stillToDo(cardFlags, result, shownPaths), map, shownPaths, plugin)
+  renderAffected(el, map, shownPaths, plugin)
 }
 
 /** "You asked": the person's requests behind these changes, how each part went, and the gaps to send back. */
@@ -2097,7 +2108,7 @@ function renderRequest(el, change, result, plugin) {
     }
   }
   if (change.outside.length && change.turns.length) {
-    card.createDiv({ cls: 'rv-muted', text: `No Claude edit recorded for ${change.outside.map(p => path.basename(p)).join(', ')}: your own edits, or a command Claude ran.` })
+    card.createDiv({ cls: 'rv-muted', text: `No Claude change recorded for ${change.outside.map(p => path.basename(p)).join(', ')}: probably your own edits.` })
   }
 }
 
@@ -2135,32 +2146,41 @@ function renderApproach(el, change, result, shownPaths, project, plugin) {
 
 /** One changed file: what Claude did, what it connects to, anything flagged, then the diff with its Why notes. */
 /**
- * One changed file, after a review: what Claude did in large type, then (with two or more real changes) each
- * change's what and why, numbered. Nothing else sits on the card: connections live in the right sidebar and
- * flags under "Still to do". Code starts closed on a file with a breakdown, so the summary is read first.
+ * One changed file. Every card starts closed to its header row, so all the files involved show at once; opened,
+ * it shows what Claude did in large type, then (with two or more real changes) each change's what and why,
+ * numbered. Connections live in the right sidebar. Inside an open card the code starts closed on a file with a
+ * breakdown, so the summary is read first, and open on any other.
  */
 function renderFileCard(el, { file, step, info, isOutside, change, result, ownState, map, project, plugin }) {
   const key = `${change.id}:${file.path}`
   const changes = breakdownOf(info, file.path, map, change.files.map(f => f.path))
   const hasBreakdown = changes.length > 0
+  const isCardOpen = plugin.openCards.has(key)
   const isOpen = hasBreakdown ? plugin.toggledCode.has(key) : !plugin.toggledCode.has(key)
+  const toggleCard = () => {
+    if (isCardOpen) plugin.openCards.delete(key)
+    else plugin.openCards.add(key)
+    plugin.focus = file.path
+    plugin.refresh([TURN_VIEW, SIDE_VIEW])
+  }
   const toggleCode = () => {
     if (plugin.toggledCode.has(key)) plugin.toggledCode.delete(key)
     else plugin.toggledCode.add(key)
     plugin.focus = file.path
     plugin.refresh([TURN_VIEW, SIDE_VIEW])
   }
-  const section = el.createDiv({ cls: `rv-file${plugin.focus === file.path ? ' is-focus' : ''}` })
+  const section = el.createDiv({ cls: `rv-file${plugin.focus === file.path ? ' is-focus' : ''}${isCardOpen ? '' : ' is-closed'}` })
   section.dataset.path = file.path
 
-  const head = section.createEl('button', { cls: 'rv-file-hd', attr: { 'aria-expanded': String(isOpen) } })
+  const head = section.createEl('button', { cls: 'rv-file-hd', attr: { 'aria-expanded': String(isCardOpen) } })
   head.createEl('span', { cls: 'rv-step-no', text: String(step) })
   head.createEl('span', { cls: 'rv-mono rv-strong rv-file-path', text: file.path })
   const [label, tone] = CHANGE_LABELS[file.change] || ['Changed', 'muted']
   chip(head, label, tone)
   counts(head, file.added, file.removed).addClass('rv-push')
-  setIcon(head.createEl('span', { cls: `rv-chevron${isOpen ? ' is-open' : ''}` }), 'chevron-right')
-  head.addEventListener('click', toggleCode)
+  setIcon(head.createEl('span', { cls: `rv-chevron${isCardOpen ? ' is-open' : ''}` }), 'chevron-right')
+  head.addEventListener('click', toggleCard)
+  if (!isCardOpen) return
 
   const hero = section.createDiv({ cls: 'rv-hero' })
   // Claude speaks here as the story's narrator: a small mark and label, then its words set like a pull-quote.
@@ -2262,53 +2282,18 @@ function renderDiff(section, file, { changes, key, plugin }) {
   if (rows.length > MAX_DIFF_LINES) code.createDiv({ cls: 'rv-more', text: `${rows.length - MAX_DIFF_LINES} more lines not shown` })
 }
 
-function renderFlag(parent, flag, plugin) {
-  const line = parent.createDiv({ cls: `rv-flag rv-flag-${flag.tone}` })
-  chip(line, flag.kind, flag.tone)
-  if (flag.file) line.createEl('span', { cls: 'rv-mono rv-flag-file', text: path.basename(flag.file) })
-  line.createEl('span', { cls: 'rv-grow', text: flag.text })
-  const guide = line.createEl('button', { cls: 'rv-link', text: 'Guide Claude ›' })
-  guide.addEventListener('click', () => plugin.draftSteer(flag.draft))
-}
-
-/**
- * Everything flagged, gathered under the cards so the cards stay on what Claude did: parts of the request not
- * done, shortcuts, changes nobody asked for and broken guardrails, each naming its file. `flags` come from the
- * cards; the whole review adds what points at no file. Then the files the change reaches without editing them.
- */
-function stillToDo(flags, result, shownPaths) {
-  const all = [...flags]
-  if (result) {
-    for (const r of result.requirements) {
-      if (r.status === 'done' || r.evidence.some(e => shownPaths.has(e.file))) continue
-      all.push({ kind: r.status, tone: STATUS_TONES[r.status], file: '', text: `${r.id} ${r.text}: ${r.finding}`, draft: `${r.id} "${r.text}" is ${r.status}: ${sentence(r.finding)} Finish it.` })
-    }
-    for (const v of result.violations) {
-      if (v.evidence.some(e => shownPaths.has(e.file))) continue
-      all.push({ kind: 'guardrail', tone: 'red', file: '', text: `Goes against "${v.guardrail}": ${v.finding}`, draft: `This goes against my guardrail "${v.guardrail}": ${sentence(v.finding)} Fix it.` })
-    }
-  }
-  const seen = new Set()
-  return all.filter(flag => !seen.has(flag.text) && seen.add(flag.text))
-}
-
-function renderLeftovers(el, flags, map, shownPaths, plugin) {
+/** Under the cards: files the change reaches through their imports without editing them. */
+function renderAffected(el, map, shownPaths, plugin) {
   const affected = map ? map.nodes.filter(n => n.kind === 'affected') : []
-  if (affected.length === 0 && flags.length === 0) return
+  if (affected.length === 0) return
   const card = el.createDiv({ cls: 'rv-card rv-leftovers' })
-  if (flags.length) {
-    sectionTitle(card, 'Still to do')
-    for (const flag of flags) renderFlag(card, flag, plugin)
-  }
-  if (affected.length) {
-    sectionTitle(card, 'Not changed, but affected')
-    for (const node of affected) {
-      const used = map.edges.filter(e => e.from === node.path && shownPaths.has(e.to)).map(e => path.basename(e.to))
-      const line = card.createDiv({ cls: 'rv-leftover' })
-      const name = line.createEl('button', { cls: 'rv-link rv-mono', text: node.path })
-      name.addEventListener('click', () => plugin.showFile(node.path))
-      line.createEl('span', { text: `Uses ${used.join(', ') || 'a changed file'}, so this change reaches it. Claude didn't edit it: worth a quick look.` })
-    }
+  sectionTitle(card, 'Not changed, but affected')
+  for (const node of affected) {
+    const used = map.edges.filter(e => e.from === node.path && shownPaths.has(e.to)).map(e => path.basename(e.to))
+    const line = card.createDiv({ cls: 'rv-leftover' })
+    const name = line.createEl('button', { cls: 'rv-link rv-mono', text: node.path })
+    name.addEventListener('click', () => plugin.showFile(node.path))
+    line.createEl('span', { text: `Uses ${used.join(', ') || 'a changed file'}, so this change reaches it. Claude didn't edit it: worth a quick look.` })
   }
 }
 
@@ -2477,7 +2462,7 @@ class SideView extends ItemView {
         const info = infoOf.get(file)
         const used = map.edges.filter(e => e.from === file && byPath.has(e.to)).map(e => path.basename(e.to))
         const effect = info && info.effect ? info.effect : kind === 'affected' ? `Uses ${used.join(', ') || 'a changed file'}, so the change reaches it. Not edited.` : changed ? `${changed.added} lines added, ${changed.removed} removed.` : ''
-        item.createEl('span', { cls: 'rv-muted rv-hit-how', text: change.outside.includes(file) && change.turns.length ? `${effect} No Claude edit recorded.` : effect })
+        item.createEl('span', { cls: 'rv-muted rv-hit-how', text: change.outside.includes(file) && change.turns.length ? `${effect} No Claude change recorded.` : effect })
         item.addEventListener('click', () => plugin.showFile(file))
       }
     }
@@ -2665,4 +2650,4 @@ class RearviewSettingTab extends PluginSettingTab {
 }
 
 module.exports = RearviewPlugin
-module.exports.testing = { SideView, REVIEW_SYSTEM, stillToDo, reviewKey, pickReview, breakdownOf, changeAt, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, flagsFor, thenLine, resultOf, findImporters, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
+module.exports.testing = { SideView, commandWrites, REVIEW_SYSTEM, reviewKey, pickReview, breakdownOf, changeAt, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, thenLine, resultOf, findImporters, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
