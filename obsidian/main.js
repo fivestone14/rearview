@@ -106,29 +106,26 @@ function gapsMessage(result) {
   )
 }
 
-/** The sidebar shows this many of a project's newest turns and commits until "Show more". */
-const SIDEBAR_TURNS = 8
-const SIDEBAR_COMMITS = 5
+/** The sidebar shows this many of a project's newest commits until "Show all". */
+const SIDEBAR_COMMITS = 3
 
-/** A small badge for a turn's review result; nothing when there is no score worth a badge. */
-function badgeOf(turn) {
-  if (turn.isGit) return null
-  const review = turn.review || {}
-  if (review.state === 'pending') return { label: 'reviewing', tone: 'muted' }
-  if (review.state === 'failed') return { label: 'failed', tone: 'red' }
-  const s = score(turn)
-  return /^\d+\/\d+$/.test(s.label) ? s : null
+/** How each kind of uncommitted change is marked in the sidebar: a letter, as `git status` uses, and a colour. */
+const CHANGE_KINDS = {
+  edited: { letter: 'M', label: 'modified', tone: 'orange' },
+  new: { letter: 'A', label: 'new file', tone: 'green' },
+  deleted: { letter: 'D', label: 'deleted', tone: 'red' },
+}
+
+/** `↑2 ↓1` for commits ahead of and behind the remote branch, `in sync`, or '' when the branch has no upstream. */
+function syncLabel(git) {
+  if (git.ahead == null) return ''
+  const parts = [git.ahead ? `↑${git.ahead}` : '', git.behind ? `↓${git.behind}` : ''].filter(Boolean)
+  return parts.length ? parts.join(' ') : 'in sync'
 }
 
 function filesLabel(turn) {
   if (!turn.files) return ''
   return turn.files.length === 0 ? 'no edits' : turn.files.length === 1 ? '1 file' : `${turn.files.length} files`
-}
-
-/** A turn with edits and no review, shown as a dot before its title. */
-function isUnreviewed(turn) {
-  const review = turn.review || {}
-  return !turn.isGit && !!turn.files && turn.files.length > 0 && !['done', 'pending', 'failed'].includes(review.state)
 }
 
 /** `just now`, `5 min ago`, `3 h ago`, `yesterday`, or a date. */
@@ -839,8 +836,10 @@ class RearviewPlugin extends Plugin {
     this.gitBusy = new Set()
     /** Projects whose transcripts are being read right now, and root -> { dir, files } of what was read. */
     this.transcriptBusy = new Set()
-    /** Sidebar lists opened with "Show more", as `<root>:turns` or `<root>:commits`. */
+    /** Commit lists opened with "Show all", as `<root>:commits`. */
     this.expanded = new Set()
+    /** Projects closed in the sidebar, by root. */
+    this.collapsed = new Set()
     this.transcriptCache = new Map()
     /** commit sha -> its changed files */
     this.commitFiles = new Map()
@@ -1003,9 +1002,12 @@ class RearviewPlugin extends Plugin {
       const before = this.projects.get(root).git
       if (before && before.signature === signature) return
       const branch = (await runGit(root, ['branch', '--show-current'])).stdout.trim() || 'detached HEAD'
+      // Commits behind and ahead of the upstream branch; none when the branch has no upstream.
+      const sync = await runGit(root, ['rev-list', '--left-right', '--count', '@{upstream}...HEAD'])
+      const [behind, ahead] = sync.code === 0 ? sync.stdout.trim().split(/\s+/).map(Number) : [null, null]
       const commits = before && before.head === head.stdout ? before.commits : await loadCommits(root)
       for (const commit of commits) if (this.commitFiles.has(commit.sha)) commit.files = this.commitFiles.get(commit.sha)
-      setGit({ isRepo: true, signature, head: head.stdout, branch, worktree: await loadWorkingTree(root), commits })
+      setGit({ isRepo: true, signature, head: head.stdout, branch, ahead, behind, worktree: await loadWorkingTree(root), commits })
       this.mapCache.delete('git:worktree')
       const shown = this.current()
       this.refresh(shown && shown.turn.isGit ? undefined : [TURNS_VIEW])
@@ -1313,7 +1315,7 @@ class TurnsView extends ItemView {
     return TURNS_VIEW
   }
   getDisplayText() {
-    return 'Rearview turns'
+    return 'Rearview projects'
   }
   getIcon() {
     return 'eye'
@@ -1326,79 +1328,119 @@ class TurnsView extends ItemView {
     const el = this.contentEl
     el.empty()
     el.addClass('rv')
+    const projects = [...this.plugin.projects.values()]
     const head = el.createDiv({ cls: 'rv-sidebar-head' })
     head.createEl('span', { cls: 'rv-sidebar-title', text: 'Projects' })
-    const add = head.createEl('button', { cls: 'clickable-icon rv-icon-button', attr: { 'aria-label': 'Add project folder' } })
-    setIcon(add, 'plus')
-    add.addEventListener('click', () => new ProjectModal(this.app, this.plugin, null).open())
-    if (this.plugin.settings.projects.length === 0) return emptyState(el, this.plugin)
-    const shown = this.plugin.current()
-    // `meta` is [id, ...details, time]: the time keeps its place at the right and the rest gives way at narrow widths.
-    const item = (parent, project, turn, title, meta) => {
-      const isShown = shown && shown.turn.id === turn.id && shown.project.root === project.root
-      const attr = { title }
-      if (isShown) attr['aria-current'] = 'true'
-      const button = parent.createEl('button', { cls: `rv-item${isShown ? ' is-active' : ''}`, attr })
-      const top = button.createDiv({ cls: 'rv-item-top' })
-      if (isUnreviewed(turn)) top.createEl('span', { cls: 'rv-unreviewed', attr: { 'aria-label': 'Not reviewed', title: 'Not reviewed' } })
-      top.createEl('span', { cls: 'rv-item-title', text: title })
-      const badge = badgeOf(turn)
-      if (badge) top.createEl('span', { cls: `rv-badge rv-${badge.tone}`, text: badge.label })
-      const [id, ...rest] = meta
-      const details = rest.slice(0, -1).filter(Boolean)
-      const metaRow = button.createDiv({ cls: 'rv-item-meta' })
-      const main = metaRow.createEl('span', { cls: 'rv-item-meta-main' })
-      main.createEl('span', { cls: turn.isGit && turn.sha ? 'rv-hash' : '', text: id })
-      if (details.length) main.createEl('span', { text: ` · ${details.join(' · ')}` })
-      metaRow.createEl('span', { cls: 'rv-item-time', text: rest[rest.length - 1] || '' })
-      button.addEventListener('click', () => this.plugin.select(project.root, turn.id))
-    }
-    const showAll = (parent, key, hidden) => {
-      if (hidden <= 0 && !this.plugin.expanded.has(key)) return
-      const isOpen = this.plugin.expanded.has(key)
-      const more = parent.createEl('button', { cls: 'rv-more-link', text: isOpen ? 'Show fewer' : `Show ${hidden} more` })
-      more.addEventListener('click', () => {
-        if (isOpen) this.plugin.expanded.delete(key)
-        else this.plugin.expanded.add(key)
+    if (projects.length > 1) {
+      const anyOpen = projects.some(project => !this.plugin.collapsed.has(project.root))
+      const all = head.createEl('button', { cls: 'rv-more-link rv-push', text: anyOpen ? 'Collapse all' : 'Expand all' })
+      all.addEventListener('click', () => {
+        for (const project of projects) {
+          if (anyOpen) this.plugin.collapsed.add(project.root)
+          else this.plugin.collapsed.delete(project.root)
+        }
         this.render()
       })
     }
+    const add = head.createEl('button', { cls: 'clickable-icon rv-icon-button', attr: { 'aria-label': 'Add project folder' } })
+    setIcon(add, 'plus')
+    add.addEventListener('click', () => new ProjectModal(this.app, this.plugin, null).open())
+    if (projects.length === 0) return emptyState(el, this.plugin)
 
-    for (const project of this.plugin.projects.values()) {
-      const group = el.createDiv({ cls: 'rv-project' })
-      const top = group.createDiv({ cls: 'rv-project-top' })
-      top.createEl('span', { cls: 'rv-project-name', text: path.basename(project.root), attr: { title: project.root } })
-      const check = top.createEl('button', { cls: 'clickable-icon rv-icon-button', attr: { 'aria-label': 'Check Git connection' } })
-      setIcon(check, 'plug-zap')
-      check.addEventListener('click', () => new ProjectModal(this.app, this.plugin, project.root).open())
-      const git = project.git
-      const branch = group.createDiv({ cls: 'rv-project-meta' })
-      setIcon(branch.createEl('span', { cls: 'rv-meta-icon' }), 'git-branch')
-      branch.createEl('span', { text: git && git.isRepo ? git.branch : git ? 'Not a Git repository' : 'Checking…' })
+    // The filter hides cards instead of redrawing, so the box keeps focus while typing.
+    if (projects.length > 3) {
+      const filter = el.createEl('input', { cls: 'rv-filter', attr: { type: 'search', placeholder: 'Filter projects or branches', 'aria-label': 'Filter projects' } })
+      filter.addEventListener('input', () => {
+        const query = filter.value.trim().toLowerCase()
+        for (const card of el.querySelectorAll('.rv-project')) card.toggleClass('is-hidden', !!query && !card.dataset.search.includes(query))
+      })
+    }
+    for (const project of projects) this.renderProject(el, project)
+  }
 
-      const turnsKey = `${project.root}:turns`
-      const turnLimit = this.plugin.expanded.has(turnsKey) ? Infinity : SIDEBAR_TURNS
-      const section = (title, count) => {
-        const label = group.createDiv({ cls: 'rv-section' })
-        label.createEl('span', { text: title })
-        if (count) label.createEl('span', { cls: 'rv-section-count', text: String(count) })
-      }
-      section('Turns', project.turns.length)
-      if (project.turns.length === 0) group.createDiv({ cls: 'rv-empty-line', text: project.error || 'No turns yet.' })
-      const newestFirst = project.turns.map((turn, i) => ({ turn, n: i + 1 })).reverse()
-      for (const { turn, n } of newestFirst.slice(0, turnLimit)) {
-        item(group, project, turn, titleOf(turn.request), [`T${n}`, turn.isSteer ? 'steer' : '', turn.files.length ? filesLabel(turn) : '', relativeTime(turn.finishedAt)])
-      }
-      showAll(group, turnsKey, newestFirst.length - SIDEBAR_TURNS)
+  /** One project as a card: its name and Git state, then (when open) its uncommitted changes and last commits. */
+  renderProject(el, project) {
+    const git = project.git
+    const isRepo = !!git && git.isRepo
+    const name = path.basename(project.root)
+    const isOpen = !this.plugin.collapsed.has(project.root)
+    const card = el.createDiv({ cls: `rv-project${isOpen ? ' is-open' : ''}` })
+    card.dataset.search = `${name} ${isRepo ? git.branch : ''}`.toLowerCase()
 
-      if (!git || !git.isRepo) continue
-      const commitsKey = `${project.root}:commits`
-      const commitLimit = this.plugin.expanded.has(commitsKey) ? Infinity : SIDEBAR_COMMITS
-      section('Git', git.commits.length + (git.worktree.files.length ? 1 : 0))
-      if (git.worktree.files.length) item(group, project, git.worktree, 'Uncommitted changes', [filesLabel(git.worktree), 'now'])
-      else group.createDiv({ cls: 'rv-empty-line', text: 'No uncommitted changes.' })
-      for (const commit of git.commits.slice(0, commitLimit)) item(group, project, commit, titleOf(commit.request), [commit.short, relativeTime(commit.finishedAt)])
-      showAll(group, commitsKey, git.commits.length - SIDEBAR_COMMITS)
+    const top = card.createDiv({ cls: 'rv-project-top' })
+    const toggle = top.createEl('button', { cls: 'rv-project-toggle', attr: { 'aria-expanded': String(isOpen), title: project.root } })
+    setIcon(toggle.createEl('span', { cls: 'rv-chevron' }), 'chevron-right')
+    const names = toggle.createDiv({ cls: 'rv-project-names' })
+    names.createEl('span', { cls: 'rv-project-name', text: name })
+    const lastCommit = isRepo && git.commits[0] ? relativeTime(git.commits[0].finishedAt) : ''
+    names.createEl('span', { cls: 'rv-project-meta', text: !git ? 'Checking…' : !isRepo ? 'Not a Git repository' : [git.branch, lastCommit].filter(Boolean).join(' · ') })
+    if (isRepo) {
+      const state = toggle.createDiv({ cls: 'rv-project-state' })
+      const changed = git.worktree.files.length
+      state.createEl('span', { cls: `rv-badge rv-${changed ? 'orange' : 'green'}`, text: changed ? `${changed} changed` : 'clean' })
+      state.createEl('span', { cls: 'rv-mono rv-project-sync', text: syncLabel(git) })
+    }
+    toggle.addEventListener('click', () => {
+      if (isOpen) this.plugin.collapsed.add(project.root)
+      else this.plugin.collapsed.delete(project.root)
+      this.render()
+    })
+    const check = top.createEl('button', { cls: 'clickable-icon rv-icon-button', attr: { 'aria-label': 'Check Git connection' } })
+    setIcon(check, 'plug-zap')
+    check.addEventListener('click', () => new ProjectModal(this.app, this.plugin, project.root).open())
+
+    if (!isOpen || !isRepo) return
+    const body = card.createDiv({ cls: 'rv-project-body' })
+    const section = (title, count) => {
+      const label = body.createDiv({ cls: 'rv-section' })
+      label.createEl('span', { text: title })
+      if (count) label.createEl('span', { cls: 'rv-section-count', text: String(count) })
+      return label
+    }
+
+    const changes = git.worktree.files
+    section('Uncommitted changes', changes.length)
+    if (changes.length === 0) body.createDiv({ cls: 'rv-empty-line', text: 'Nothing uncommitted.' })
+    for (const file of changes) {
+      const kind = CHANGE_KINDS[file.change] || CHANGE_KINDS.edited
+      const row = body.createEl('button', { cls: 'rv-change', attr: { title: `${file.path} · ${kind.label}` } })
+      row.createEl('span', { cls: `rv-change-kind rv-${kind.tone}-text`, text: kind.letter })
+      // The file name comes first and the folder after it, dimmed, so a narrow sidebar cuts the folder, not the name.
+      const slash = file.path.lastIndexOf('/')
+      const where = row.createEl('span', { cls: 'rv-change-path' })
+      where.createEl('span', { cls: 'rv-mono rv-change-name', text: file.path.slice(slash + 1) })
+      if (slash > 0) where.createEl('span', { cls: 'rv-mono rv-change-dir', text: file.path.slice(0, slash) })
+      counts(row, file.added, file.removed)
+      row.addEventListener('click', () => {
+        this.plugin.select(project.root, git.worktree.id)
+        this.plugin.scrollToFile(file.path)
+      })
+    }
+
+    const commitsKey = `${project.root}:commits`
+    const limit = this.plugin.expanded.has(commitsKey) ? Infinity : SIDEBAR_COMMITS
+    section('Last commits', git.commits.length)
+    if (git.commits.length === 0) body.createDiv({ cls: 'rv-empty-line', text: 'No commits yet.' })
+    const shown = this.plugin.current()
+    for (const commit of git.commits.slice(0, limit)) {
+      const isShown = !!shown && shown.turn.id === commit.id && shown.project.root === project.root
+      const button = body.createEl('button', { cls: `rv-item${isShown ? ' is-active' : ''}`, attr: { title: titleOf(commit.request) } })
+      if (isShown) button.setAttr('aria-current', 'true')
+      button.createDiv({ cls: 'rv-item-title', text: titleOf(commit.request) })
+      const meta = button.createDiv({ cls: 'rv-item-meta' })
+      meta.createEl('span', { cls: 'rv-hash', text: commit.short })
+      meta.createEl('span', { cls: 'rv-item-time', text: relativeTime(commit.finishedAt) })
+      button.addEventListener('click', () => this.plugin.select(project.root, commit.id))
+    }
+    const hidden = git.commits.length - SIDEBAR_COMMITS
+    if (hidden > 0 || this.plugin.expanded.has(commitsKey)) {
+      const isAll = this.plugin.expanded.has(commitsKey)
+      const more = body.createEl('button', { cls: 'rv-more-link', text: isAll ? 'Show fewer' : `Show all ${git.commits.length} commits` })
+      more.addEventListener('click', () => {
+        if (isAll) this.plugin.expanded.delete(commitsKey)
+        else this.plugin.expanded.add(commitsKey)
+        this.render()
+      })
     }
   }
 }
@@ -2093,4 +2135,4 @@ class RearviewSettingTab extends PluginSettingTab {
 }
 
 module.exports = RearviewPlugin
-module.exports.testing = { REVIEW_SYSTEM, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
+module.exports.testing = { REVIEW_SYSTEM, syncLabel, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }

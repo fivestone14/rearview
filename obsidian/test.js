@@ -142,6 +142,13 @@ test('the gaps message lists what is partly done, missed, unrequested or against
   assert.strictEqual(t.gapsMessage({ requirements: [result.requirements[0]], steps: [], violations: [] }), '')
 })
 
+test('the sidebar shows commits ahead of and behind GitHub, or nothing without an upstream', () => {
+  assert.strictEqual(t.syncLabel({ ahead: 3, behind: 0 }), '↑3')
+  assert.strictEqual(t.syncLabel({ ahead: 1, behind: 2 }), '↑1 ↓2')
+  assert.strictEqual(t.syncLabel({ ahead: 0, behind: 0 }), 'in sync')
+  assert.strictEqual(t.syncLabel({ ahead: null, behind: null }), '')
+})
+
 test('a steer needs words and a conversation to continue', async () => {
   const fake = { steering: null, refresh: () => {} }
   assert.strictEqual(await Rearview.prototype.steer.call(fake, '/p', { sessionId: 's' }, '   '), false)
