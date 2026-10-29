@@ -76,7 +76,8 @@
 .rv .rv-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Main tab */
-.rv-turn { padding: 20px 28px 40px !important; }
+.rv-turn { padding: 20px 28px 0 !important; }
+.rv .rv-body { padding-bottom: 24px; }
 .rv .rv-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; color: var(--text-muted); }
 .rv .rv-crumb { font-weight: 500; color: var(--text-normal); }
 .rv .rv-card {
@@ -209,27 +210,6 @@
 .rv .rv-empty { padding: 16px 8px; color: var(--text-muted); }
 .rv .rv-empty h3 { margin: 0 0 6px; color: var(--text-normal); }
 
-/* Map tab */
-.rv .rv-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 12px; color: var(--text-muted); }
-.rv .rv-legend-item { display: flex; align-items: center; gap: 6px; }
-.rv .rv-swatch { width: 14px; height: 14px; border-radius: 4px; border: 2px solid; box-sizing: border-box; }
-.rv .rv-map { overflow-x: auto; margin-bottom: 16px; padding: 12px 0; border: 1px solid var(--background-modifier-border); border-radius: 14px; background: var(--background-primary); }
-.rv .rv-map svg { display: block; }
-.rv .rv-col-label { fill: var(--text-muted); font-family: var(--font-interface); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
-.rv .rv-node { cursor: pointer; outline: none; }
-.rv .rv-node rect { stroke-width: 1.5; }
-.rv .rv-node:hover rect, .rv .rv-node:focus-visible rect { stroke-width: 3; }
-.rv .rv-node-name { fill: var(--text-normal); font-family: var(--font-monospace); font-size: 12.5px; font-weight: 600; }
-.rv .rv-node-dir { fill: var(--text-muted); font-family: var(--font-interface); font-size: 11px; }
-.rv .rv-node-edited rect, .rv .rv-swatch.rv-node-edited { fill: rgba(var(--color-blue-rgb), 0.12); background: rgba(var(--color-blue-rgb), 0.12); stroke: var(--color-blue); border-color: var(--color-blue); }
-.rv .rv-node-new rect, .rv .rv-swatch.rv-node-new { fill: rgba(var(--color-green-rgb), 0.12); background: rgba(var(--color-green-rgb), 0.12); stroke: var(--color-green); border-color: var(--color-green); }
-.rv .rv-node-deleted rect, .rv .rv-swatch.rv-node-deleted { fill: rgba(var(--color-red-rgb), 0.12); background: rgba(var(--color-red-rgb), 0.12); stroke: var(--color-red); border-color: var(--color-red); }
-.rv .rv-node-affected rect, .rv .rv-swatch.rv-node-affected { fill: rgba(var(--color-orange-rgb), 0.12); background: rgba(var(--color-orange-rgb), 0.12); stroke: var(--color-orange); border-color: var(--color-orange); }
-.rv .rv-node-untouched rect, .rv .rv-swatch.rv-node-untouched { fill: var(--background-secondary); background: var(--background-secondary); stroke: var(--background-modifier-border-hover); border-color: var(--background-modifier-border-hover); border-width: 1px; }
-.rv .rv-edge { fill: none; stroke: var(--text-faint); stroke-width: 1.4; }
-.rv .rv-arrowhead { fill: var(--text-faint); }
-.rv .rv-edge-row { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0; }
-
 /* Projects and Git */
 .rv .rv-group-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
 .rv .rv-group-head .rv-group-name { padding: 0; }
@@ -240,7 +220,7 @@
 .rv .rv-step { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; align-items: baseline; }
 .rv .rv-step-detail { overflow-wrap: anywhere; }
 
-/* Left sidebar: projects, turns and Git, laid out so nothing crowds */
+/* Left sidebar: projects and Git, laid out so nothing crowds */
 .rv .rv-sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 4px 6px 8px; }
 .rv .rv-sidebar-title { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); white-space: nowrap; }
 .rv .rv-icon-button { flex: none; padding: 4px; color: var(--text-muted); }
@@ -323,3 +303,96 @@
 .rv .rv-steer-buttons .mod-cta { flex: 1 1 auto; }
 .rv .rv-steer-note { font-size: 11.5px; line-height: 1.45; color: var(--text-muted); }
 .rv .rv-steer-done { font-size: 12px; color: var(--text-normal); }
+
+/* Main tab: the change as one story, file by file */
+.rv .rv-head { align-items: center; flex-wrap: wrap; }
+.rv .rv-head .rv-crumb { font-size: 12px; color: var(--text-muted); }
+.rv .rv-reviewed-by button { height: auto; padding: 4px 10px; font-size: 12px; }
+.rv .rv-request.is-older { color: var(--text-muted); font-size: var(--font-ui-small); }
+.rv .rv-gaps-link { align-self: flex-start; }
+.rv .rv-approach { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; }
+.rv .rv-approach .rv-grow { flex: 1 1 0; }
+.rv .rv-approach .rv-link { flex: none; white-space: nowrap; }
+.rv .rv-card > .rv-more-link { align-self: flex-start; margin-left: 0; }
+.rv .rv-file.is-focus { border-color: var(--interactive-accent); box-shadow: 0 0 0 1px var(--interactive-accent); }
+.rv button.rv-file-hd { width: 100%; height: auto; border-radius: 0; background: var(--background-secondary-alt); box-shadow: none; text-align: left; cursor: pointer; font-weight: normal; }
+.rv button.rv-file-hd:hover { background: var(--background-modifier-hover); }
+.rv .rv-file-path { overflow-wrap: anywhere; color: var(--text-normal); }
+.rv .rv-step-no { flex: none; display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 999px; background: rgba(var(--interactive-accent-rgb), 0.2); color: var(--text-accent); font-size: 12px; font-weight: 700; }
+.rv .rv-file-hd .rv-chevron.is-open { transform: rotate(90deg); }
+.rv .rv-band { background: rgba(var(--interactive-accent-rgb), 0.06); }
+.rv .rv-band-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-accent); }
+.rv .rv-did { margin: 0; font-size: var(--font-ui-medium); line-height: 1.55; color: var(--text-normal); }
+.rv .rv-connects { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rv .rv-connect { gap: 4px; height: auto; padding: 3px 9px; border: 1px solid var(--background-modifier-border); border-radius: 7px; background: var(--background-primary); box-shadow: none; font-size: 12px; font-weight: normal; cursor: pointer; }
+.rv .rv-connect:hover { border-color: var(--interactive-accent); }
+.rv .rv-flag { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border: 1px solid; border-radius: 9px; }
+.rv .rv-flag .rv-link { flex: none; white-space: nowrap; }
+.rv .rv-flag-orange { background: rgba(var(--color-orange-rgb), 0.08); border-color: rgba(var(--color-orange-rgb), 0.3); }
+.rv .rv-flag-red { background: rgba(var(--color-red-rgb), 0.08); border-color: rgba(var(--color-red-rgb), 0.3); }
+.rv .rv-flag-purple { background: rgba(var(--color-purple-rgb), 0.08); border-color: rgba(var(--color-purple-rgb), 0.3); }
+.rv .rv-flag-blue, .rv .rv-flag-muted { background: var(--background-secondary); border-color: var(--background-modifier-border); }
+.rv .rv-decided { font-size: var(--font-ui-small); color: var(--text-muted); }
+.rv .rv-file { margin-bottom: 0; }
+.rv .rv-then { display: flex; flex-wrap: wrap; gap: 6px; margin-left: 26px; padding: 9px 0 9px 14px; border-left: 2px solid rgba(var(--interactive-accent-rgb), 0.45); font-size: var(--font-ui-small); color: var(--text-muted); }
+.rv .rv-then.is-quiet { padding: 6px 0; }
+.rv .rv-then-label { font-weight: 700; color: var(--text-accent); }
+.rv .rv-leftovers { margin-top: 16px; }
+.rv .rv-leftovers .rv-h:first-child { margin-top: 0; }
+.rv .rv-leftover { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 3px 0; }
+.rv .rv-leftover .rv-link.rv-mono { font-size: 12px; }
+
+/* Main tab: the guide bar, docked under the changes */
+.rv .rv-guide { position: sticky; bottom: 0; z-index: 1; display: flex; flex-direction: column; gap: 8px; margin: 0 -28px; padding: 10px 28px 12px; border-top: 1px solid var(--background-modifier-border); background: var(--background-secondary); }
+.rv .rv-guide.is-hidden { display: none; }
+.rv .rv-rails { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rv .rv-rails-label { margin-right: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.rv .rv-rail { display: flex; align-items: center; border: 1px solid var(--background-modifier-border); border-radius: 999px; color: var(--text-muted); }
+.rv .rv-rail.is-on { border-color: rgba(var(--interactive-accent-rgb), 0.6); background: rgba(var(--interactive-accent-rgb), 0.14); color: var(--text-normal); }
+.rv .rv-rail button { height: 24px; padding: 0 4px 0 10px; border: 0; background: transparent; box-shadow: none; font-size: 12px; font-weight: 500; color: inherit; cursor: pointer; }
+.rv .rv-rail .rv-rail-remove { padding: 0 8px 0 2px; color: var(--text-faint); opacity: 0; }
+.rv .rv-rail:hover .rv-rail-remove, .rv .rv-rail-remove:focus-visible { opacity: 1; }
+.rv .rv-rail-input { height: 26px; font-size: 12px; }
+.rv .rv-guide-row { display: flex; align-items: flex-end; gap: 8px; }
+.rv .rv-guide-row textarea { flex: 1 1 auto; min-width: 0; resize: vertical; }
+
+/* Right sidebar: how the files connect */
+.rv .rv-side-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; }
+.rv .rv-seg { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--background-modifier-hover); }
+.rv .rv-seg button { height: 26px; padding: 0 9px; border: 0; border-radius: 6px; background: transparent; box-shadow: none; font-size: 12px; font-weight: 600; color: var(--text-muted); cursor: pointer; }
+.rv .rv-seg button.is-active { background: var(--background-primary); color: var(--text-normal); }
+.rv .rv-look { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; padding: 10px 12px; border-radius: 9px; background: var(--background-secondary); }
+.rv .rv-look .rv-link { align-self: flex-start; }
+.rv .rv-flow-hint { margin-bottom: 4px; font-size: 12px; }
+.rv .rv-flow { position: relative; }
+.rv .rv-flow-row { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; height: 30px; padding: 0 64px 0 8px; border: 0; border-radius: 6px; background: transparent; box-shadow: none; text-align: left; cursor: pointer; font-weight: normal; }
+.rv .rv-flow-row:hover { background: var(--background-modifier-hover); }
+.rv .rv-flow-row.is-here { background: var(--interactive-accent); color: var(--text-on-accent); }
+.rv .rv-flow-row.is-here .rv-flow-mark { color: var(--text-on-accent); }
+.rv .rv-flow-row.is-uses { background: rgba(var(--color-blue-rgb), 0.12); }
+.rv .rv-flow-row.is-usedby { background: rgba(var(--color-orange-rgb), 0.12); }
+.rv .rv-flow-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.rv .rv-flow-name.is-faint { color: var(--text-muted); }
+.rv .rv-flow-mark { flex: none; display: inline-block; width: 12px; text-align: center; font-family: var(--font-monospace); font-size: 11px; font-weight: 700; }
+.rv .rv-blue-mark { color: var(--color-blue); }
+.rv .rv-green-mark { color: var(--color-green); }
+.rv .rv-red-mark { color: var(--color-red); }
+.rv .rv-orange-mark { color: var(--color-orange); }
+.rv .rv-muted-mark { color: var(--text-faint); }
+.rv .rv-arc { position: absolute; right: 10px; box-sizing: border-box; border: 1.5px solid; border-left: 0; border-radius: 0 12px 12px 0; pointer-events: none; }
+.rv .rv-arc.is-uses { border-color: rgba(var(--color-blue-rgb), 0.75); }
+.rv .rv-arc.is-usedby { border-color: rgba(var(--color-orange-rgb), 0.8); }
+.rv .rv-arc-dot { position: absolute; width: 7px; height: 7px; border-radius: 999px; pointer-events: none; }
+.rv .rv-arc-dot.is-uses { background: var(--color-blue); }
+.rv .rv-arc-dot.is-usedby { background: var(--color-orange); }
+.rv .rv-flow-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 8px 0; font-size: 11px; color: var(--text-muted); }
+.rv .rv-link-groups { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--background-modifier-border); }
+.rv .rv-link-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+.rv .rv-link-groups .rv-link-group { margin-bottom: 0; }
+.rv .rv-link-group-title { display: flex; align-items: center; gap: 8px; padding: 0 6px 2px; }
+.rv .rv-swatch-line { flex: none; width: 18px; border-top: 2px solid; }
+.rv .rv-swatch-line.is-uses { border-color: var(--color-blue); }
+.rv .rv-swatch-line.is-usedby { border-color: var(--color-orange); }
+.rv .rv-hit-how { font-size: 12px; white-space: normal; }
+.rv .rv-impact-intro { margin: 0 0 12px; }
+.rv .rv-impact-top { display: flex; align-items: center; gap: 8px; width: 100%; }

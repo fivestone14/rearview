@@ -124,20 +124,20 @@ test('the request card shows only the person\'s words, not the context Claude Co
   assert.strictEqual(t.requestText('Line one\n\nLine two'), 'Line one\n\nLine two')
 })
 
-test('the gaps message lists what is partly done, missed, unrequested or against a principle, and nothing else', () => {
+test('the gaps message lists what is partly done, missed, unrequested or against a guardrail, and nothing else', () => {
   const result = {
     requirements: [
       { id: 'R1', text: 'Add a toggle', status: 'done', finding: 'Added' },
       { id: 'R2', text: 'Add tests', status: 'missed', finding: 'No tests' },
     ],
     steps: [{ kind: 'unrequested', title: 'Changed the radius' }, { kind: 'decision', title: 'Used context' }],
-    violations: [{ principleId: 'tests-required', finding: 'No tests added' }],
+    violations: [{ guardrail: 'Add tests for new behavior', finding: 'No tests added' }],
   }
   const message = t.gapsMessage(result)
   assert.match(message, /It can be wrong/)
   assert.match(message, /1\. Add tests \(missed\): No tests/)
   assert.match(message, /2\. Not requested: Changed the radius/)
-  assert.match(message, /3\. Goes against principle "tests-required"/)
+  assert.match(message, /3\. Goes against the guardrail "Add tests for new behavior"/)
   assert.doesNotMatch(message, /Add a toggle|Used context/)
   assert.strictEqual(t.gapsMessage({ requirements: [result.requirements[0]], steps: [], violations: [] }), '')
 })
@@ -154,6 +154,82 @@ test('a steer needs words and a conversation to continue', async () => {
   assert.strictEqual(await Rearview.prototype.steer.call(fake, '/p', { sessionId: 's' }, '   '), false)
   assert.strictEqual(await Rearview.prototype.steer.call(fake, '/p', { isGit: true }, 'Add tests'), false)
   assert.deepStrictEqual(notices.slice(-2), ['Write what Claude should do instead first.', 'This has no Claude Code conversation to continue. Use Copy and paste it into Claude Code.'])
+})
+
+// ---------- changes: the story order, the turns behind them, and when a review is out of date ----------
+
+test('files are ordered so a file comes before the files that import it, and unlinked files come last', () => {
+  const edges = [
+    { from: 'src/App.tsx', to: 'src/theme/ThemeContext.tsx' },
+    { from: 'src/settings/SettingsPanel.tsx', to: 'src/theme/ThemeContext.tsx' },
+    { from: 'src/theme/ThemeContext.tsx', to: 'src/hooks/useLocalStorage.ts' },
+  ]
+  const paths = ['src/settings/SettingsPanel.tsx', 'src/theme/theme.css', 'src/App.tsx', 'src/theme/ThemeContext.tsx']
+  assert.deepStrictEqual(t.buildOrder(paths, edges), ['src/theme/ThemeContext.tsx', 'src/settings/SettingsPanel.tsx', 'src/App.tsx', 'src/theme/theme.css'])
+  // An import cycle cannot be ordered, so its files keep their place instead of being dropped.
+  assert.deepStrictEqual(t.buildOrder(['a', 'b'], [{ from: 'a', to: 'b' }, { from: 'b', to: 'a' }]), ['a', 'b'])
+})
+
+test('the Connections list puts helpers just before the file using them and affected files just after', () => {
+  const nodes = [{ path: 'ctx', kind: 'new' }, { path: 'panel', kind: 'edited' }, { path: 'store', kind: 'untouched' }, { path: 'header', kind: 'affected' }]
+  const edges = [{ from: 'ctx', to: 'store' }, { from: 'panel', to: 'ctx' }, { from: 'header', to: 'ctx' }]
+  assert.deepStrictEqual(t.flowList(['ctx', 'panel'], nodes, edges), ['store', 'ctx', 'header', 'panel'])
+})
+
+test('the turns behind changes are those that edited the files since the last commit; other files have no Claude edit recorded', () => {
+  const turn = (id, startedAt, finishedAt, files) => ({ id, startedAt, finishedAt, files: files.map(p => ({ path: p })) })
+  const turns = [turn('old', 0, 50, ['a.ts']), turn('mine', 120, 200, ['a.ts', 'gone.ts']), turn('other', 130, 210, ['z.ts'])]
+  const { turns: matched, byClaude } = t.matchTurns(turns, [{ path: 'a.ts' }, { path: 'b.ts' }], 100)
+  assert.deepStrictEqual(matched.map(x => x.id), ['mine'])
+  assert.deepStrictEqual([...byClaude], ['a.ts'])
+  assert.deepStrictEqual(t.matchTurns(turns, [{ path: 'a.ts' }], 0, 60).turns.map(x => x.id), ['old'])
+})
+
+test('a review knows when the changes moved on since it ran', () => {
+  const files = [{ path: 'a.ts', change: 'edited', diff: '@@ -1 +1 @@\n-a\n+b' }]
+  assert.strictEqual(t.changeSignature(files), t.changeSignature(files.map(f => ({ ...f }))))
+  assert.notStrictEqual(t.changeSignature(files), t.changeSignature([{ ...files[0], diff: '@@ -1 +1 @@\n-a\n+c' }]))
+})
+
+test('the review is asked about files in story order, told which ones have no Claude edit recorded, and its new fields are read', () => {
+  const prompt = t.reviewPrompt({
+    requests: ['Add dark mode'],
+    files: [{ path: 'b.ts', change: 'edited', diff: '+b' }, { path: 'a.ts', change: 'new', diff: '+a' }],
+    order: ['a.ts', 'b.ts'],
+    edges: [{ from: 'b.ts', to: 'a.ts' }],
+    outside: ['b.ts'],
+    guardrails: ['Add tests'],
+    filesRead: [],
+    agentMessages: '',
+  })
+  assert.match(prompt, /FILES IN ORDER:\na\.ts\nb\.ts/)
+  assert.match(prompt, /NO AGENT EDIT RECORDED[^\n]*:\nb\.ts/)
+  assert.match(prompt, /CONNECTIONS:\nb\.ts -> a\.ts/)
+  assert.match(prompt, /GUARDRAILS:\nAdd tests/)
+  assert.ok(prompt.indexOf('### a.ts') < prompt.indexOf('### b.ts'))
+  const review = t.parseReview(JSON.stringify({
+    files: [{ file: 'a.ts', did: 'Added it', effect: 'Theme is shared', next: 'b.ts uses it' }],
+    links: [{ from: 'b.ts', to: 'a.ts', how: 'reads the theme' }, { from: 'x' }],
+    violations: [{ guardrail: 'Add tests', finding: 'None added', evidence: [{ file: 'a.ts' }] }],
+  }))
+  assert.deepStrictEqual(review.files, [{ file: 'a.ts', did: 'Added it', effect: 'Theme is shared', next: 'b.ts uses it' }])
+  assert.deepStrictEqual(review.links, [{ from: 'b.ts', to: 'a.ts', how: 'reads the theme' }])
+  assert.strictEqual(review.violations[0].guardrail, 'Add tests')
+  // A review saved before these fields existed still draws, with each list empty.
+  assert.deepStrictEqual(t.resultOf({ state: 'done', result: { requirements: [], notes: [], steps: [] } }).links, [])
+})
+
+test('flags go on the file their evidence points to, each with a message to guide Claude', () => {
+  const result = {
+    requirements: [{ id: 'R1', text: 'Toggle', status: 'done', evidence: [{ file: 'a.ts' }] }, { id: 'R2', text: 'Follow system', status: 'partly', finding: 'Only at start', evidence: [{ file: 'a.ts', line: 4 }] }],
+    steps: [{ kind: 'unrequested', title: 'Changed radius', why: '', evidence: [{ file: 'b.css' }] }, { kind: 'decision', title: 'Shared store', evidence: [{ file: 'a.ts' }] }],
+    violations: [],
+  }
+  assert.deepStrictEqual(t.flagsFor('a.ts', result).map(f => [f.kind, f.text]), [['partly', 'R2 Follow system: Only at start']])
+  const [extra] = t.flagsFor('b.css', result)
+  assert.strictEqual(extra.kind, 'not asked for')
+  assert.match(extra.draft, /Revert "Changed radius" in b\.css/)
+  assert.strictEqual(t.thenLine(null, 'a.ts', 'b.ts', [{ from: 'b.ts', to: 'a.ts' }]), 'b.ts uses a.ts.')
 })
 
 // ---------- Git ----------
@@ -175,7 +251,7 @@ test('the Git connection check refuses a folder outside a repository and passes 
   assert.strictEqual(t.githubRepo('git@github.com:me/app.git'), 'me/app')
 })
 
-test('uncommitted changes and commits load like turns, secrets hidden', async () => {
+test('uncommitted changes and commits load with secrets hidden', async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'rearview-repo-'))
   git(repo, 'init', '-q')
   fs.writeFileSync(path.join(repo, 'a.ts'), 'a\nb\n')
@@ -188,8 +264,26 @@ test('uncommitted changes and commits load like turns, secrets hidden', async ()
   assert.deepStrictEqual(worktree.files.map(f => [f.path, f.change, !!f.isSecret]).sort(), [['.env', 'new', true], ['a.ts', 'edited', false], ['new.ts', 'new', false]])
   assert.ok(!JSON.stringify(worktree).includes('hunter2'))
   const [commit] = await t.loadCommits(repo)
-  assert.strictEqual(commit.request, 'First commit')
+  assert.strictEqual(commit.message, 'First commit')
   assert.deepStrictEqual((await t.loadCommitFiles(repo, commit.sha)).map(f => [f.path, f.added]), [['a.ts', 2]])
+})
+
+test('the Map finds unchanged files that import a changed file, and the working tree is reviewed per project', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'rearview-repo-'))
+  git(repo, 'init', '-q')
+  fs.mkdirSync(path.join(repo, 'src'))
+  fs.writeFileSync(path.join(repo, 'src/theme.ts'), 'export const theme = 1\n')
+  fs.writeFileSync(path.join(repo, 'src/Header.tsx'), "import { theme } from './theme'\nexport const h = theme\n")
+  fs.writeFileSync(path.join(repo, 'src/other.ts'), "// mentions theme but imports nothing\n")
+  git(repo, 'add', '.')
+  git(repo, 'commit', '-qm', 'First commit')
+  fs.writeFileSync(path.join(repo, 'src/theme.ts'), 'export const theme = 2\n')
+  const worktree = await t.loadWorkingTree(repo)
+  assert.strictEqual(worktree.id, `wt:${repo}`)
+  assert.deepStrictEqual(await t.findImporters(repo, worktree.files), ['src/Header.tsx'])
+  const map = await t.buildMap(repo, worktree.files)
+  assert.deepStrictEqual(map.nodes.map(n => [n.path, n.kind]), [['src/theme.ts', 'edited'], ['src/Header.tsx', 'affected']])
+  assert.deepStrictEqual(map.edges, [{ from: 'src/Header.tsx', to: 'src/theme.ts' }])
 })
 
 // ---------- run ----------

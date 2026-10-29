@@ -2,18 +2,18 @@
 
 An Obsidian plugin for reviewing what an AI coding agent changed, built to be easier to follow than reading changes in an IDE.
 
-While Claude Code works on your project, Rearview shows each request you made and what came of it: every file changed, with the diff, how the changed files connect, and where a name is defined and used. A review by the model of your choice adds why each change was made, whether the request was fully done, and Claude's reasoning rebuilt from its work. Everything sits in one Obsidian window, next to your notes.
+While Claude Code works on your project, Rearview shows what changed since your last commit, file by file in the order the files build on each other, with what you asked for, how the files connect, and what each change does to the app. A review by the model of your choice adds what Claude did in each file and why, whether your request was fully done, and Claude's reasoning rebuilt from its work. Guardrails and a message box let you guide Claude from the same view. Everything sits in one Obsidian window, next to your notes.
 
 ## What to expect
 
-- **Every request is a turn.** Each prompt you type in Claude Code (in the desktop app, the terminal or VS Code) becomes a turn in Rearview, with Claude's messages, the files it read, and each edit it made. Turns appear and grow while Claude works; there is nothing to import or refresh.
-- **Code.** Each changed file's diff, line by line. Under a line that needs explaining, a *Why* note says why it changed and where that reason comes from: *Claude said so*, *inferred* from the code, or *no reason found*.
-- **Map.** The changed files in the middle, the files that use them on the left, and the files they use on the right, with lines for "uses". Click a changed file to jump to its diff.
-- **Check work and Reasoning.** Your request split into parts marked *done*, *partly* or *missed*, and Claude's steps rebuilt with problems first (shortcuts, unrequested changes, skipped work).
-- **Reviews with any model.** A turn is reviewed by itself once Claude finishes it, or with **Review** on any turn. Use a tool you are already signed in to (Claude Code, OpenAI Codex, Gemini CLI), a hosted API with your key (Anthropic, OpenAI, Google Gemini, OpenRouter, or any OpenAI-compatible address), or a model on your own computer (Ollama, LM Studio).
+- **Your changes, not a history.** Each project in the left sidebar shows its uncommitted changes and last commits, refreshed every few seconds. Rearview matches them to the Claude Code requests that made them (in the desktop app, the terminal or VS Code), so there is nothing to import, and files with no Claude edit on record are marked *no Claude edit recorded*.
+- **One story, top to bottom.** The main tab starts with what you asked, then shows each changed file as a numbered card, in the order they build on each other: what Claude did there, what it connects to, anything flagged, then the diff. A *Then ↓* line links each card to the next.
+- **Why notes.** Under a line that needs explaining, a *Why* note says why it changed and where that reason comes from: *Claude said so*, *inferred* from the code, or *no reason found*.
+- **Flags.** Parts of your request that are partly done or missed, shortcuts, changes nobody asked for, and anything against a guardrail sit on the file they are about, each with **Guide Claude ›**.
+- **How the files connect.** The right sidebar lists every file around the change in flow order, with lines from the chosen file to what it uses and what uses it. *Impact* says what each change does to the app, which files the change reaches without editing them, and where each part of your request stands.
+- **Reviews with any model.** Uncommitted changes are reviewed by themselves once Claude stops for a little while, or with **Review**. Use a tool you are already signed in to (Claude Code, OpenAI Codex, Gemini CLI), a hosted API with your key (Anthropic, OpenAI, Google Gemini, OpenRouter, or any OpenAI-compatible address), or a model on your own computer (Ollama, LM Studio).
 - **Trace.** Click **Trace** beside a Why note to see where a name is defined and used, without leaving the review.
-- **Git.** Each project also lists its uncommitted changes, refreshed every few seconds, and its recent commits. Open one to see its diff and Map like a turn.
-- **Steer.** Write what Claude should do instead. **Send to Claude** continues that turn's conversation in the background, and Claude's reply and changes appear as a new turn; **Copy** puts the message on your clipboard to paste into Claude Code.
+- **Guide Claude.** The bar under the changes holds your guardrails (standing instructions you switch on or off) and a message box. **Send to Claude** continues the conversation behind the changes in the background, with the guardrails that are on; **Copy** puts the message on your clipboard to paste into Claude Code.
 
 Rearview reads what Claude Code already saves, so it never sees Claude's private reasoning. Reasons and steps are rebuilt from what Claude said, read and changed, and each one says where it came from.
 
@@ -47,14 +47,13 @@ To update Rearview later, copy the three files again and restart Obsidian.
 
 1. **Open Rearview.** Click the eye icon in the left ribbon, or run **Rearview: Open Rearview** from the command palette (Cmd/Ctrl+P).
 2. **Add your project.** Click **+** beside *Projects* and choose the project folder. Rearview checks the connection step by step: the folder, Git, the repository, the branch and last commit, the GitHub remote and whether it answers, and how far the branch is ahead or behind. A folder that is not in a Git repository is refused with the fix to make.
-3. **Work in Claude Code as usual.** Each prompt you send appears under *Turns* in the left sidebar, newest first, and opens in the main tab. Rearview comes forward by itself when a new turn starts (switch this off in its settings).
-4. **Review the turn.**
-   - Read **Code** top to bottom; the Why notes explain the lines that need it.
-   - Open **Map** to see what the change touches beyond the files it edited.
+3. **Work in Claude Code as usual.** The project's uncommitted changes show in the main tab as Claude edits files. Rearview comes forward by itself when you send Claude a request (switch this off in its settings).
+4. **Review the changes.**
+   - Read the main tab top to bottom: your request, then each file in build order. The Why notes explain the lines that need it, and flags show what needs your eyes.
+   - In the right sidebar, click any file to see what it uses and what uses it, or open **Impact** to see what the changes do to the app.
    - Use **Trace** on any name you want to follow.
-   - Check **Check work** for anything partly done or missed, and **Reasoning** for shortcuts or changes nobody asked for.
-5. **Steer.** In the right sidebar, write what Claude should do instead. **Send to Claude** continues the turn's conversation in the background (`claude -p --resume`): Claude can edit files, and shell commands it asks for are refused, since nobody is there to approve them. Its reply and changes appear as a new turn marked *steer*. If that conversation is open in Claude Code, reopen it there to see the steer. Or press **Copy** and paste the message into Claude Code yourself.
-6. **Look at Git.** Under *Git*, open *Uncommitted changes* for everything changed since the last commit, including edits made by shell commands, or any recent commit.
+5. **Guide Claude.** Click **Guide Claude ›** on a flag to draft a message, or write your own in the bar under the changes, and switch on the guardrails you want. **Send to Claude** continues the conversation in the background (`claude -p --resume`): Claude can edit files, and shell commands it asks for are refused, since nobody is there to approve them. Its edits show up as the changes move. Or press **Copy** and paste the message into Claude Code yourself.
+6. **Look back.** Click any of the project's last commits in the left sidebar to see it the same way.
 
 ## Choose the review model
 
@@ -66,22 +65,21 @@ Open **Settings › Rearview › Review model** and pick how reviews run. The se
 - **A model on your computer** (free and private). Install [Ollama](https://ollama.com), run `ollama pull qwen2.5-coder` (or any model), pick **Ollama (on this computer)**, then **Load models**. LM Studio works the same way.
 - **Anything else** that speaks the OpenAI API: pick **Custom**, enter its address, a key if it needs one, and the model.
 
-Click **Test** to check the connection. Small local models sometimes answer in a shape Rearview cannot read; the turn then says so and offers **Try again**, and a larger model usually fixes it.
+Click **Test** to check the connection. Small local models sometimes answer in a shape Rearview cannot read; the review then says so and offers **Try again**, and a larger model usually fixes it.
 
 ## Privacy and security
 
-- **You choose where reviews go.** Rearview reads Claude Code's transcripts and your project's files, and runs `git` in the project. A review sends the turn (your request, Claude's messages and the diffs) to the review model you chose: through your Claude Code, Codex or Gemini CLI login, to the API you added a key for, or to a model on your own computer, where nothing leaves it. Apart from reviews, its only network use is the connection check, which asks your Git remote for its branches.
+- **You choose where reviews go.** Rearview reads Claude Code's transcripts and your project's files, and runs `git` in the project. A review sends the changes (your requests, Claude's messages, the diffs and your guardrails) to the review model you chose: through your Claude Code, Codex or Gemini CLI login, to the API you added a key for, or to a model on your own computer, where nothing leaves it. Apart from reviews, its only network use is the connection check, which asks your Git remote for its branches.
 - **Reviews run isolated.** A CLI review runs in an empty folder as a plain model call: Claude Code gets no tools, hooks or MCP servers, and saves no session.
-- **Secret-looking files are never shown.** `.env` files, private keys, credential and secrets files, Terraform state and similar names appear by name only, in turns, Git changes, Trace and the Map.
+- **Secret-looking files are never shown.** `.env` files, private keys, credential and secrets files, Terraform state and similar names appear by name only, in changes, Trace and the connections.
 - **No command can be smuggled in.** `git` runs with an argument list, never through a shell, and Trace only searches plain names.
-- **A steer is sent only by you.** Rearview continues a conversation only when you press **Send to Claude**, and the background run can edit files but not run shell commands.
+- **A message is sent only by you.** Rearview continues a conversation only when you press **Send to Claude**, and the background run can edit files but not run shell commands.
 
 ## Limits
 
-- **Edits made with shell commands** leave no diff in Claude Code's transcripts, so they do not appear under their turn. They do appear in the project's Git section.
-- **The newest sessions are read.** Rearview reads a project's twelve most recent Claude Code sessions and shows their latest sixty turns.
-- **Map and Trace are text search.** Imports are understood for relative JavaScript/TypeScript and Python imports; Trace uses `git grep`.
-- **Subagents** run inside a turn and are not shown as turns of their own.
+- **Edits made with shell commands** leave no diff in Claude Code's transcripts, so Rearview cannot tell they came from Claude and marks them *no Claude edit recorded*. Their diffs still show.
+- **The newest sessions are read.** Rearview matches changes against a project's twelve most recent Claude Code sessions.
+- **Connections and Trace are text search.** Imports are understood for relative JavaScript/TypeScript and Python imports; Trace uses `git grep`.
 
 ## Development
 
