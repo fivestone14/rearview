@@ -1624,13 +1624,13 @@ class TurnsView extends ItemView {
   render() {
     const el = this.contentEl
     el.empty()
-    el.addClass('rv')
+    el.addClass('rv', 'rv-projects')
     const projects = [...this.plugin.projects.values()]
     const head = el.createDiv({ cls: 'rv-sidebar-head' })
-    head.createEl('span', { cls: 'rv-lab', text: 'Projects' })
+    head.createEl('h2', { cls: 'rv-lab', text: 'Projects' })
     if (projects.length > 1) {
       const anyOpen = projects.some(project => !this.plugin.collapsed.has(project.root))
-      const all = head.createEl('button', { cls: 'rv-more-link rv-push', text: anyOpen ? 'Collapse all' : 'Expand all' })
+      const all = head.createEl('button', { cls: 'rv-qlink rv-sidebar-all', text: anyOpen ? 'Collapse all' : 'Expand all' })
       all.addEventListener('click', () => {
         for (const project of projects) {
           if (anyOpen) this.plugin.collapsed.add(project.root)
@@ -1639,14 +1639,14 @@ class TurnsView extends ItemView {
         this.render()
       })
     }
-    const add = head.createEl('button', { cls: 'clickable-icon rv-icon-button', attr: { 'aria-label': 'Add project folder' } })
+    const add = head.createEl('button', { cls: 'rv-ib', attr: { 'aria-label': 'Add project folder' } })
     setIcon(add, 'plus')
     add.addEventListener('click', () => new ProjectModal(this.app, this.plugin, null).open())
     if (projects.length === 0) return emptyState(el, this.plugin)
 
     // The filter hides cards instead of redrawing, so the box keeps focus while typing.
     if (projects.length > 3) {
-      const filter = el.createEl('input', { cls: 'rv-filter', attr: { type: 'search', placeholder: 'Filter projects or branches', 'aria-label': 'Filter projects' } })
+      const filter = el.createEl('input', { cls: 'rv-fld rv-filter', attr: { type: 'search', placeholder: 'Filter projects or branches', 'aria-label': 'Filter projects' } })
       filter.addEventListener('input', () => {
         const query = filter.value.trim().toLowerCase()
         for (const card of el.querySelectorAll('.rv-project')) card.toggleClass('is-hidden', !!query && !card.dataset.search.includes(query))
@@ -1661,28 +1661,44 @@ class TurnsView extends ItemView {
     const isRepo = !!git && git.isRepo
     const name = path.basename(project.root)
     const isOpen = !this.plugin.collapsed.has(project.root)
-    const card = el.createDiv({ cls: `rv-project${isOpen ? ' is-open' : ''}` })
+    const card = el.createEl('section', { cls: `rv-project${isOpen ? ' is-open' : ''}`, attr: { 'aria-label': name } })
     card.dataset.search = `${name} ${isRepo ? git.branch : ''}`.toLowerCase()
 
-    const top = card.createDiv({ cls: 'rv-project-top' })
-    const toggle = top.createEl('button', { cls: 'rv-project-toggle', attr: { 'aria-expanded': String(isOpen), title: project.root } })
-    setIcon(toggle.createEl('span', { cls: 'rv-chevron' }), 'chevron-right')
-    const names = toggle.createDiv({ cls: 'rv-project-names' })
-    names.createEl('span', { cls: 'rv-project-name', text: name })
-    const lastCommit = isRepo && git.commits[0] ? relativeTime(git.commits[0].finishedAt) : ''
-    names.createEl('span', { cls: 'rv-project-meta', text: !git ? 'Checking…' : !isRepo ? 'Not a Git repository' : [git.branch, lastCommit].filter(Boolean).join(' · ') })
+    // The top of the card is one toggle: the name line (chevron · name · state) over the branch line.
+    const toggle = card.createEl('button', { cls: 'rv-project-toggle', attr: { 'aria-expanded': String(isOpen), title: project.root } })
+    const nameLine = toggle.createDiv({ cls: 'rv-project-line' })
+    setIcon(nameLine.createEl('span', { cls: 'rv-project-chevron' }), isOpen ? 'chevron-down' : 'chevron-right')
+    nameLine.createEl('span', { cls: 'rv-project-name rv-ell', text: name })
+    const state = nameLine.createEl('span', { cls: 'rv-project-state' })
     if (isRepo) {
-      const state = toggle.createDiv({ cls: 'rv-project-state' })
       const changed = git.worktree.files.length
-      state.createEl('span', { cls: `rv-badge rv-${changed ? 'orange' : 'green'}`, text: changed ? `${changed} changed` : 'clean' })
-      state.createEl('span', { cls: 'rv-mono rv-project-sync', text: syncLabel(git) })
+      state.createEl('span', { cls: `rv-project-dot${changed ? '' : ' is-clean'}` })
+      state.createEl('span', { text: changed ? `${changed} changed` : 'clean' })
+    }
+    const branchLine = toggle.createDiv({ cls: 'rv-project-line' })
+    branchLine.createEl('span')
+    const branch = branchLine.createEl('span', { cls: 'rv-project-branch' })
+    if (!isRepo) branch.createEl('span', { cls: 'rv-ell', text: !git ? 'Checking…' : 'Not a Git repository' })
+    else {
+      if (isOpen) setIcon(branch.createEl('span', { cls: 'rv-project-branch-icon' }), 'git-branch')
+      branch.createEl('span', { cls: 'rv-ell', text: git.branch })
+      // Commits ahead of and behind the remote, as arrows with counts; nothing when in sync or without a remote.
+      if (isOpen && (git.ahead || git.behind)) {
+        const sync = branchLine.createEl('span', { cls: 'rv-project-sync', attr: { title: [git.ahead ? `${git.ahead} ahead of the remote` : '', git.behind ? `${git.behind} behind the remote` : ''].filter(Boolean).join(', ') } })
+        for (const [n, icon] of [[git.ahead, 'arrow-up'], [git.behind, 'arrow-down']]) {
+          if (!n) continue
+          setIcon(sync.createEl('span', { cls: 'rv-project-sync-icon' }), icon)
+          sync.createEl('span', { text: String(n) })
+        }
+      }
     }
     toggle.addEventListener('click', () => {
       if (isOpen) this.plugin.collapsed.add(project.root)
       else this.plugin.collapsed.delete(project.root)
       this.render()
     })
-    const check = top.createEl('button', { cls: 'clickable-icon rv-icon-button', attr: { 'aria-label': 'Check Git connection' } })
+    // The connection check sits in the empty cell under the chevron and shows when the card is hovered.
+    const check = card.createEl('button', { cls: 'rv-project-check', attr: { 'aria-label': 'Check Git connection' } })
     setIcon(check, 'plug-zap')
     check.addEventListener('click', () => new ProjectModal(this.app, this.plugin, project.root).open())
 
@@ -1690,23 +1706,26 @@ class TurnsView extends ItemView {
     const body = card.createDiv({ cls: 'rv-project-body' })
     const section = (title, count) => {
       const label = body.createDiv({ cls: 'rv-section' })
-      label.createEl('span', { text: title })
-      if (count) label.createEl('span', { cls: 'rv-section-count', text: String(count) })
+      label.createEl('span')
+      label.createEl('h3', { cls: 'rv-lab rv-ell', text: title })
+      label.createEl('span', { cls: 'rv-section-count', text: count ? String(count) : '' })
       return label
     }
+    const shown = this.plugin.current()
 
     const changes = git.worktree.files
     section('Uncommitted changes', changes.length)
     if (changes.length === 0) body.createDiv({ cls: 'rv-empty-line', text: 'Nothing uncommitted.' })
     for (const file of changes) {
       const kind = CHANGE_KINDS[file.change] || CHANGE_KINDS.edited
-      const row = body.createEl('button', { cls: 'rv-change', attr: { title: `${file.path} · ${kind.label}` } })
-      row.createEl('span', { cls: `rv-change-kind rv-${kind.tone}-text`, text: kind.letter })
+      const isShown = !!shown && shown.project.root === project.root && shown.change.id === git.worktree.id && this.plugin.focus === file.path
+      const row = body.createEl('button', { cls: `rv-change${isShown ? ' is-active' : ''}`, attr: { title: `${file.path} · ${kind.label}` } })
+      row.createEl('span', { cls: 'rv-change-kind', text: kind.letter })
       // The file name comes first and the folder after it, dimmed, so a narrow sidebar cuts the folder, not the name.
       const slash = file.path.lastIndexOf('/')
       const where = row.createEl('span', { cls: 'rv-change-path' })
-      where.createEl('span', { cls: 'rv-mono rv-change-name', text: file.path.slice(slash + 1) })
-      if (slash > 0) where.createEl('span', { cls: 'rv-mono rv-change-dir', text: file.path.slice(0, slash) })
+      where.createEl('span', { cls: 'rv-change-name', text: file.path.slice(slash + 1) })
+      if (slash > 0) where.createEl('span', { cls: 'rv-change-dir rv-ell', text: file.path.slice(0, slash) })
       counts(row, file.added, file.removed)
       row.addEventListener('click', () => {
         this.plugin.select(project.root, git.worktree.id)
@@ -1718,21 +1737,26 @@ class TurnsView extends ItemView {
     const limit = this.plugin.expanded.has(commitsKey) ? Infinity : SIDEBAR_COMMITS
     section('Last commits', git.commits.length)
     if (git.commits.length === 0) body.createDiv({ cls: 'rv-empty-line', text: 'No commits yet.' })
-    const shown = this.plugin.current()
+    // Each commit is a hollow dot on one timeline, its title, then its hash and age.
+    const list = body.createDiv({ cls: 'rv-commits' })
     for (const commit of git.commits.slice(0, limit)) {
       const isShown = !!shown && shown.change.id === commit.id && shown.project.root === project.root
-      const button = body.createEl('button', { cls: `rv-item${isShown ? ' is-active' : ''}`, attr: { title: titleOf(commit.message) } })
+      const button = list.createEl('button', { cls: `rv-commit${isShown ? ' is-active' : ''}`, attr: { title: titleOf(commit.message) } })
       if (isShown) button.setAttr('aria-current', 'true')
-      button.createDiv({ cls: 'rv-item-title', text: titleOf(commit.message) })
-      const meta = button.createDiv({ cls: 'rv-item-meta' })
+      button.createEl('span', { cls: 'rv-commit-dot' })
+      const words = button.createEl('span', { cls: 'rv-commit-words' })
+      words.createEl('span', { cls: 'rv-commit-title', text: titleOf(commit.message) })
+      const meta = words.createEl('span', { cls: 'rv-commit-meta' })
       meta.createEl('span', { cls: 'rv-hash', text: commit.short })
-      meta.createEl('span', { cls: 'rv-item-time', text: relativeTime(commit.finishedAt) })
+      meta.createEl('span', { cls: 'rv-commit-time', text: relativeTime(commit.finishedAt) })
       button.addEventListener('click', () => this.plugin.select(project.root, commit.id))
     }
     const hidden = git.commits.length - SIDEBAR_COMMITS
     if (hidden > 0 || this.plugin.expanded.has(commitsKey)) {
       const isAll = this.plugin.expanded.has(commitsKey)
-      const more = body.createEl('button', { cls: 'rv-more-link', text: isAll ? 'Show fewer' : `Show all ${git.commits.length} commits` })
+      const foot = list.createDiv({ cls: 'rv-commits-more' })
+      foot.createEl('span')
+      const more = foot.createEl('button', { cls: 'rv-qlink', text: isAll ? 'Show fewer' : `Show all ${git.commits.length} commits` })
       more.addEventListener('click', () => {
         if (isAll) this.plugin.expanded.delete(commitsKey)
         else this.plugin.expanded.add(commitsKey)
@@ -1963,14 +1987,18 @@ class TurnView extends ItemView {
     const chips = rails.createDiv({ cls: 'rv-rails' })
     for (const rail of plugin.settings.guardrails) {
       const chipEl = chips.createEl('button', { cls: `rv-rail${rail.on ? ' is-on' : ''}`, attr: { role: 'switch', 'aria-checked': String(rail.on), title: rail.on ? 'On: sent with every message. Click to turn off.' : 'Off. Click to send it with every message.' } })
-      setIcon(chipEl.createEl('span', { cls: 'rv-rail-mark' }), rail.on ? 'check' : 'plus')
+      // The mark holds both a check and a plus; the stylesheet crossfades them as the chip turns on and off.
+      const mark = chipEl.createEl('span', { cls: 'rv-rail-mark', attr: { 'aria-hidden': 'true' } })
+      setIcon(mark.createEl('span', { cls: 'rv-rail-check' }), 'check')
+      setIcon(mark.createEl('span', { cls: 'rv-rail-plus' }), 'plus')
       chipEl.createEl('span', { text: rail.text })
       chipEl.addEventListener('click', async () => {
         rail.on = !rail.on
         await plugin.saveSettings(false)
         this.renderGuide(true)
       })
-      const remove = chips.createEl('button', { cls: 'rv-rail-remove', text: '×', attr: { 'aria-label': `Remove the guardrail "${rail.text}"` } })
+      const remove = chips.createEl('button', { cls: 'rv-rail-remove', attr: { 'aria-label': `Remove the guardrail "${rail.text}"` } })
+      setIcon(remove, 'x')
       remove.addEventListener('click', async () => {
         plugin.settings.guardrails = plugin.settings.guardrails.filter(g => g !== rail)
         await plugin.saveSettings(false)
@@ -1980,7 +2008,7 @@ class TurnView extends ItemView {
     const add = chips.createEl('button', { cls: 'rv-link', text: '+ Add' })
     add.addEventListener('click', () => {
       add.remove()
-      const input = chips.createEl('input', { cls: 'rv-rail-input', attr: { type: 'text', placeholder: 'e.g. Keep functions small', 'aria-label': 'New guardrail' } })
+      const input = chips.createEl('input', { cls: 'rv-fld rv-rail-input', attr: { type: 'text', placeholder: 'e.g. Keep functions small', 'aria-label': 'New guardrail' } })
       input.focus()
       input.addEventListener('keydown', async event => {
         if (event.key === 'Escape') return this.renderGuide(true)
@@ -1996,9 +2024,18 @@ class TurnView extends ItemView {
     row.createEl('span')
     row.createEl('span', { cls: 'rv-glab', text: 'Tell Claude' })
     const field = row.createDiv({ cls: 'rv-guide-field' })
-    const text = field.createEl('textarea', { attr: { id: 'rv-steer-text', rows: '1', 'aria-label': 'Message to Claude', placeholder: 'Tell Claude what to fix, keep, or know next…' } })
+    const text = field.createEl('textarea', { cls: 'rv-fld', attr: { id: 'rv-steer-text', rows: '1', 'aria-label': 'Message to Claude', placeholder: 'Tell Claude what to fix, keep, or know next…' } })
     text.value = plugin.draft
-    text.addEventListener('input', () => (plugin.draft = text.value))
+    // The box starts one line tall and grows with what is typed, up to a few lines, then scrolls.
+    const fit = () => {
+      text.style.height = '40px'
+      text.style.height = `${Math.min(200, Math.max(40, text.scrollHeight + 2))}px`
+    }
+    text.addEventListener('input', () => {
+      plugin.draft = text.value
+      fit()
+    })
+    fit()
     const canResume = !!change.sessionId
     const steering = plugin.steering && plugin.steering.changeId === change.id ? plugin.steering : null
     const isRunning = !!plugin.steering && plugin.steering.state === 'running'
@@ -2017,7 +2054,7 @@ class TurnView extends ItemView {
     const copy = field.createEl('button', { cls: 'rv-btn', text: 'Copy' })
     copy.addEventListener('click', () => plugin.copySteer(change, text.value))
 
-    const note = box.createDiv({ cls: 'rv-g' })
+    const note = box.createDiv({ cls: 'rv-g rv-guide-foot' })
     note.createEl('span')
     note.createEl('span')
     const words = note.createDiv({ cls: 'rv-guide-note' })
@@ -2076,11 +2113,11 @@ function renderChange(el, shown, plugin) {
   }
   const review = change.review || {}
 
-  const head = el.createDiv({ cls: 'rv-head' })
+  const head = el.createDiv({ cls: 'rv-top' })
   const crumb = head.createEl('span', { cls: 'rv-crumb' })
   crumb.createEl('span', { cls: 'rv-crumb-name', text: name })
   crumb.createEl('span', { cls: 'rv-crumb-sep', text: '·' })
-  crumb.createEl('span', { cls: 'rv-mono', text: change.isWorktree ? project.git.branch : change.label })
+  crumb.createEl('span', { cls: 'rv-mono rv-crumb-ref', text: change.isWorktree ? project.git.branch : change.label })
   crumb.createEl('span', { cls: 'rv-crumb-sep', text: '·' })
   crumb.createEl('span', { text: change.isWorktree ? 'changes since your last commit' : relativeTime(change.item.finishedAt) })
   reviewLine(head, project, change, plugin)
@@ -2092,7 +2129,9 @@ function renderChange(el, shown, plugin) {
     return
   }
   const byRequest = plugin.viewMode !== 'file'
-  const modes = titleRow.createDiv({ cls: 'rv-seg', attr: { role: 'group', 'aria-label': 'Show changes' } })
+  // The switch: a pill slides under the chosen side.
+  const modes = titleRow.createDiv({ cls: `rv-seg${byRequest ? '' : ' is-file'}`, attr: { role: 'group', 'aria-label': 'Show changes' } })
+  modes.createEl('span', { cls: 'rv-seg-pill', attr: { 'aria-hidden': 'true' } })
   for (const [id, label] of [['request', 'By request'], ['file', 'By file']]) {
     const isOn = (id === 'request') === byRequest
     const button = modes.createEl('button', { cls: isOn ? 'is-active' : '', text: label, attr: { 'aria-pressed': String(isOn) } })
@@ -2158,6 +2197,7 @@ function changeRow(parent, entry, view, { showFile = true } = {}) {
   tick(wrap, key, plugin)
   if (!on) return wrap
 
+  const isExtra = c.fits === 'no'
   const open = wrap.createDiv({ cls: 'rv-row-open rv-g2' })
   const line = (label, cls) => {
     open.createEl('span', { cls: 'rv-glab', text: label })
@@ -2165,18 +2205,19 @@ function changeRow(parent, entry, view, { showFile = true } = {}) {
   }
   if (c.before && c.now) {
     const value = line('Changed')
-    value.createEl('span', { cls: 'rv-muted', text: c.before })
+    value.createEl('span', { cls: 'rv-faint', text: c.before })
     value.createEl('span', { cls: 'rv-arrow', text: '→' })
     value.createEl('span', { text: c.now })
   } else if (c.what) line('Changed').setText(c.what)
-  if (c.why) line('Why').setText(c.why)
+  if (c.why) line(isExtra ? 'Why Claude did it' : 'Why').setText(c.why)
   if (c.fits === 'further' && c.serves) {
     open.createEl('span')
     open.createEl('span', { cls: 'rv-cap rv-orange-text', text: `Goes beyond what you asked: ${c.serves}` })
   }
   open.createEl('span')
-  const actions = open.createDiv({ cls: 'rv-actions' })
-  const ask = actions.createEl('button', { cls: 'rv-link', text: c.fits === 'yes' ? 'Ask Claude about this ›' : 'Ask Claude to undo ›' })
+  // A change nobody asked for offers its undo as a button; the others as a link.
+  const actions = open.createDiv({ cls: `rv-actions${isExtra ? ' is-extra' : ''}` })
+  const ask = actions.createEl('button', { cls: isExtra ? 'rv-btn rv-btn-accent rv-btn-sm' : 'rv-link', text: c.fits === 'yes' ? 'Ask Claude about this ›' : 'Ask Claude to undo ›' })
   ask.addEventListener('click', () => plugin.draftSteer(c.fits === 'yes' ? `About "${c.title}" (${entry.file}, ${lineWord(c)}): ` : `Please undo "${c.title}" in ${entry.file} (${lineWord(c)}). I didn't ask for it.`))
   const code = actions.createEl('button', { cls: 'rv-link rv-link-quiet', text: 'See the code ›' })
   code.addEventListener('click', () => plugin.showChange(entry.file, key))
@@ -2202,11 +2243,12 @@ function renderByRequest(el, view) {
   const facts = glance.createDiv({ cls: 'rv-glance-facts' })
   facts.createEl('span', { cls: 'rv-b5', text: `${change.asks.length} ${change.asks.length === 1 ? 'request' : 'requests'} · ${entries.length} ${entries.length === 1 ? 'change' : 'changes'}` })
   if (entries.length) {
-    meter(facts, [[matched, 'green'], [further, 'orange'], [extras.length, 'purple']])
-    const parts = facts.createEl('span', { cls: 'rv-cap rv-muted' })
-    parts.createEl('span', { text: [matched ? `${matched} match` : '', further ? `${further} ${FITS.further[0]}` : ''].filter(Boolean).join(' · ') })
+    const verdict = facts.createEl('span', { cls: 'rv-glance-verdict' })
+    meter(verdict, [[matched, 'green'], [further, 'orange'], [extras.length, 'purple']])
+    const counts = [matched ? `${matched} match` : '', further ? `${further} ${FITS.further[0]}` : ''].filter(Boolean).join(' · ')
+    if (counts) verdict.createEl('span', { cls: 'rv-cap rv-muted', text: extras.length ? `${counts} ·` : counts })
     if (extras.length) {
-      const jump = parts.createEl('button', { cls: 'rv-link rv-link-cap', text: `${matched || further ? ' · ' : ''}${extras.length} not asked for ›` })
+      const jump = verdict.createEl('button', { cls: 'rv-link rv-link-cap', text: `${extras.length} not asked for ›` })
       jump.addEventListener('click', () => el.querySelector('.rv-extras')?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
     }
     facts.createEl('span', { cls: `rv-cap rv-glance-progress${checked === entries.length ? ' is-done' : ''}`, text: checked === 0 ? 'Tick each change as you go' : checked === entries.length ? 'All checked' : `${checked} of ${entries.length} checked` })
@@ -2214,11 +2256,11 @@ function renderByRequest(el, view) {
 
   if (extras.length) {
     const section = el.createDiv({ cls: 'rv-req rv-extras' })
-    const top = section.createDiv({ cls: 'rv-req-head rv-req-head-extra' })
+    const top = section.createDiv({ cls: 'rv-g rv-req-head-extra' })
     setIcon(top.createEl('span', { cls: 'rv-req-badge is-extra' }), 'sparkles')
     const words = top.createDiv({ cls: 'rv-req-words is-inline' })
     words.createEl('span', { cls: 'rv-lab rv-purple-text', text: 'Not from anything you asked' })
-    words.createEl('span', { cls: 'rv-cap rv-muted', text: 'Changes Claude made on its own · check these first' })
+    words.createEl('span', { cls: 'rv-cap rv-dim', text: 'Changes Claude made on its own · check these first' })
     const list = section.createDiv({ cls: 'rv-req-list' })
     for (const entry of extras) changeRow(list, entry, view)
   }
@@ -2232,14 +2274,14 @@ function renderByRequest(el, view) {
     const stored = plugin.openRequests.get(groupKey)
     const first = groups.find(g => g.changes.length) || groups[0]
     const open = stored !== undefined ? stored : !allChecked && total > 0 && group === first
-    const section = el.createDiv({ cls: `rv-req${open ? ' is-open' : ''}` })
-    const head = section.createEl('button', { cls: 'rv-g rv-req-head rv-req-toggle', attr: { 'aria-expanded': String(open) } })
+    const section = el.createDiv({ cls: `rv-req${open ? ' is-open' : ''}${group === groups[0] ? ' is-newest' : ''}` })
+    const head = section.createEl('button', { cls: 'rv-req-toggle', attr: { 'aria-expanded': String(open) } })
     const badge = head.createEl('span', { cls: `rv-req-badge${allChecked ? ' is-done' : group === groups[0] ? ' is-newest' : ''}` })
     if (allChecked) setIcon(badge, 'check')
     else badge.setText(`R${group.n}`)
     const words = head.createDiv({ cls: 'rv-req-words' })
     words.createEl('span', { cls: 'rv-head', text: group.meaning || group.ask.text })
-    if (group.meaning) words.createEl('span', { cls: 'rv-cap rv-muted', text: group.ask.answered ? `You said "${group.ask.text}", answering "${group.ask.answered}"` : `You said "${group.ask.text}"` })
+    if (group.meaning) words.createEl('span', { cls: 'rv-cap rv-faint', text: group.ask.answered ? `You said "${group.ask.text}", answering "${group.ask.answered}"` : `You said "${group.ask.text}"` })
     const side = head.createDiv({ cls: 'rv-req-side' })
     const gm = group.changes.filter(e => e.c.fits === 'yes').length
     const gf = group.changes.filter(e => e.c.fits === 'further').length
@@ -2248,7 +2290,7 @@ function renderByRequest(el, view) {
       meter(verdict, [[gm, 'green'], [gf, 'orange']])
       verdict.createEl('span', { cls: 'rv-cap rv-muted', text: gf ? `${gm} match · ${gf} ${FITS.further[0]}` : total === 1 ? 'matches' : `all ${gm} match` })
     } else side.createEl('span', { cls: 'rv-cap rv-muted', text: 'no code changes' })
-    side.createEl('span', { cls: `rv-cap${allChecked ? ' rv-green-text' : ' rv-faint'}`, text: [allChecked ? `all ${total} checked` : done ? `${done} of ${total} checked` : '', group.ask.at ? relativeTime(group.ask.at) : ''].filter(Boolean).join(' · ') })
+    side.createEl('span', { cls: `rv-cap rv-req-progress${allChecked ? ' is-done' : ''}`, text: [allChecked ? `all ${total} checked` : done ? `${done} of ${total} checked` : '', group.ask.at ? relativeTime(group.ask.at) : ''].filter(Boolean).join(' · ') })
     setIcon(head.createEl('span', { cls: `rv-chevron${open ? ' is-open' : ''}` }), 'chevron-right')
     head.addEventListener('click', () => {
       plugin.openRequests.set(groupKey, !open)
@@ -2257,14 +2299,16 @@ function renderByRequest(el, view) {
     if (!open) return
     const list = section.createDiv({ cls: 'rv-req-list' })
     if (total === 0) {
-      list.createDiv({ cls: 'rv-body rv-muted', text: entries.length ? 'No change in these files came from this.' : 'Review these changes to see what this led to.' })
+      list.createDiv({ cls: 'rv-body rv-faint rv-req-none', text: entries.length ? 'No change in these files came from this.' : 'Review these changes to see what this led to.' })
       return
     }
     // Exceptions first: what goes further than asked shows open; what matches folds into one line.
     const look = group.changes.filter(e => e.c.fits !== 'yes')
     const matches = group.changes.filter(e => e.c.fits === 'yes')
     if (look.length) {
-      list.createDiv({ cls: 'rv-cap rv-orange-text rv-req-lookline', text: look.length === 1 ? 'Needs a look · 1 goes further than you asked' : `Needs a look · ${look.length} go further than you asked` })
+      const lookline = list.createDiv({ cls: 'rv-glab rv-orange-text rv-req-lookline' })
+      lookline.createEl('span', { cls: 'rv-tag-dot' })
+      lookline.createEl('span', { text: look.length === 1 ? 'Needs a look · 1 goes further than you asked' : `Needs a look · ${look.length} go further than you asked` })
       for (const entry of look) changeRow(list, entry, view)
     }
     if (matches.length) {
@@ -2278,7 +2322,7 @@ function renderByRequest(el, view) {
       tag.createEl('span', { cls: 'rv-tag-dot' })
       tag.createEl('span', { text: 'matches' })
       button.createEl('span', { cls: 'rv-row-title rv-b5 rv-muted', text: matches.length === 1 ? '1 change matches what you asked' : `${matches.length} changes match what you asked` })
-      button.createEl('span', { cls: 'rv-mono rv-row-where rv-faint', text: [...perFile].map(([f, n]) => `${f} ${n}`).join(' · ') })
+      button.createEl('span', { cls: 'rv-mono rv-row-where rv-dim', text: [...perFile].map(([f, n]) => `${f} ${n}`).join(' · ') })
       setIcon(button.createEl('span', { cls: `rv-chevron${matchesOpen ? ' is-open' : ''}` }), 'chevron-right')
       button.addEventListener('click', () => {
         plugin.openRequests.set(matchKey, !matchesOpen)
@@ -2335,10 +2379,10 @@ function renderByFile(el, view) {
     const section = table.createDiv({ cls: `rv-file${isOpen ? ' is-open' : ''}${plugin.focus === filePath ? ' is-focus' : ''}` })
     section.dataset.path = filePath
     const row = section.createEl('button', { cls: 'rv-gf rv-file-row', attr: { 'aria-expanded': String(isOpen) } })
-    row.createEl('span', { cls: 'rv-cap rv-faint', text: String(i + 1) })
-    const name = row.createEl('span', { cls: 'rv-mono rv-ell' })
+    row.createEl('span', { cls: 'rv-cap rv-dim', text: String(i + 1) })
+    const name = row.createEl('span', { cls: 'rv-mono rv-ell rv-file-name' })
     const slash = filePath.lastIndexOf('/')
-    if (slash > 0) name.createEl('span', { cls: 'rv-faint', text: filePath.slice(0, slash + 1) })
+    if (slash > 0) name.createEl('span', { cls: 'rv-dim', text: filePath.slice(0, slash + 1) })
     name.createEl('span', { text: filePath.slice(slash + 1) })
     const status = row.createEl('span', { cls: 'rv-cap rv-file-status' })
     status.createEl('span', { cls: `rv-mono rv-file-mark rv-${mark.tone}-text`, text: mark.letter })
@@ -2398,7 +2442,7 @@ function renderByFile(el, view) {
       const item = body.createDiv({ cls: `rv-item${plugin.activeChange === changeKey ? ' is-on' : ''}${checked ? ' is-checked' : ''}` })
       item.dataset.key = changeKey
       const title = item.createDiv({ cls: 'rv-g2 rv-item-head' })
-      title.createEl('span', { cls: 'rv-mono rv-cap rv-faint', text: c.from === c.to ? String(c.from) : `${c.from}–${c.to}` })
+      title.createEl('span', { cls: 'rv-mono rv-cap rv-dim', text: c.from === c.to ? String(c.from) : `${c.from}–${c.to}` })
       const titleRow = title.createDiv({ cls: 'rv-item-title' })
       titleRow.createEl('span', { cls: 'rv-b6 rv-row-title', text: c.title })
       tick(titleRow, changeKey, plugin)
@@ -2409,18 +2453,18 @@ function renderByFile(el, view) {
       }
       if (c.before && c.now) {
         const value = line('Changed')
-        value.createEl('span', { cls: 'rv-muted', text: c.before })
+        value.createEl('span', { cls: 'rv-faint', text: c.before })
         value.createEl('span', { cls: 'rv-arrow', text: '→' })
         value.createEl('span', { text: c.now })
       } else if (c.what) line('Changed').setText(c.what)
       if (c.why) line('Why').setText(c.why)
       if (c.fits) {
         const value = line('Fits?')
-        value.addClass('rv-cap')
+        value.addClass('rv-cap', 'rv-item-fit')
         const tag = value.createEl('span', { cls: `rv-tag rv-${FITS[c.fits][1]}-text` })
         tag.createEl('span', { cls: 'rv-tag-dot' })
         tag.createEl('span', { text: FITS[c.fits][0] })
-        if (c.ask) value.createEl('span', { cls: 'rv-faint', text: ` from R${c.ask}` })
+        if (c.ask) value.createEl('span', { cls: 'rv-dim', text: `from R${c.ask}` })
         if (c.fits !== 'yes' && c.serves) {
           grid.createEl('span')
           grid.createEl('span', { cls: 'rv-cap rv-orange-text', text: `Goes beyond what you asked: ${c.serves}` })
@@ -2439,9 +2483,12 @@ function renderByFile(el, view) {
     if (rest.length) {
       const otherKey = `${key}:other`
       const otherOpen = plugin.openCards.has(otherKey)
-      const other = body.createDiv({ cls: 'rv-g2' })
+      const other = body.createDiv({ cls: 'rv-g rv-file-more' })
       other.createEl('span')
-      const button = other.createEl('button', { cls: 'rv-link rv-link-quiet', text: `${otherOpen ? 'Hide' : 'Show'} ${rest.length} other changed ${rest.length === 1 ? 'line' : 'lines'} in this file ${otherOpen ? '⌃' : '⌄'}` })
+      other.createEl('span')
+      const button = other.createEl('button', { cls: 'rv-link rv-link-quiet' })
+      button.createEl('span', { text: `${otherOpen ? 'Hide' : 'Show'} ${rest.length} other changed ${rest.length === 1 ? 'line' : 'lines'} in this file` })
+      setIcon(button.createEl('span', { cls: 'rv-link-mark' }), otherOpen ? 'chevron-up' : 'chevron-down')
       button.addEventListener('click', () => {
         if (otherOpen) plugin.openCards.delete(otherKey)
         else plugin.openCards.add(otherKey)
@@ -2458,11 +2505,11 @@ function renderByFile(el, view) {
 
 /** A change's code: a header with the file, lines and counts, then the diff rows. */
 function codeBlock(parent, filePath, c, rows) {
-  const block = parent.createDiv({ cls: 'rv-g2' })
-  block.createEl('span', { cls: 'rv-glab', text: 'Code' })
+  const block = parent.createDiv({ cls: 'rv-g2 rv-code-block' })
+  block.createEl('span', { cls: 'rv-glab rv-code-label', text: 'Code' })
   const box = block.createDiv({ cls: 'rv-code' })
   const head = box.createDiv({ cls: 'rv-code-head rv-mono' })
-  head.createEl('span', { text: c ? `${filePath} · ${lineWord(c)}` : `${filePath} · other changed lines` })
+  head.createEl('span', { cls: 'rv-code-where', text: c ? `${filePath} · ${lineWord(c)}` : `${filePath} · other changed lines` })
   const adds = rows.filter(r => r.kind === 'add').length
   const dels = rows.filter(r => r.kind === 'del').length
   if (adds) head.createEl('span', { cls: 'rv-green-text', text: `+${adds}` })
@@ -2498,7 +2545,7 @@ function renderAffected(el, map, shownPaths, plugin) {
 // ---------- right sidebar: how the files connect, what the changes do, and Trace ----------
 
 /** Rows in the Connections list, and the gap the lines between them are drawn in. */
-const FLOW_ROW = 30
+const FLOW_ROW = 32
 
 class SideView extends ItemView {
   constructor(leaf, plugin) {
@@ -2526,8 +2573,9 @@ class SideView extends ItemView {
     el.empty()
     el.addClass('rv', 'rv-side')
     const plugin = this.plugin
-    el.createEl('div', { cls: 'rv-lab rv-side-title', text: 'How the files connect' })
-    const tabs = el.createDiv({ cls: 'rv-tabs', attr: { role: 'tablist', 'aria-label': 'Panel view' } })
+    const head = el.createDiv({ cls: 'rv-side-head' })
+    head.createEl('h2', { cls: 'rv-lab rv-side-title', text: 'How the files connect' })
+    const tabs = head.createDiv({ cls: 'rv-tabs', attr: { role: 'tablist', 'aria-label': 'Panel view' } })
     for (const [id, label] of [['links', 'Connections'], ['impact', 'Impact'], ['trace', 'Trace']]) {
       const isOn = plugin.panel === id
       const button = tabs.createEl('button', { cls: `rv-tab${isOn ? ' is-active' : ''}`, text: label, attr: { role: 'tab', 'aria-selected': String(isOn) } })
@@ -2536,18 +2584,19 @@ class SideView extends ItemView {
         this.render()
       })
     }
-    if (plugin.panel === 'trace') return this.renderTrace(el)
+    const body = el.createDiv({ cls: 'rv-side-body' })
+    if (plugin.panel === 'trace') return this.renderTrace(body)
 
     const shown = plugin.current()
-    if (!shown || shown.change.isLoading) return el.createDiv({ cls: 'rv-muted rv-pad', text: shown ? 'Loading…' : 'Nothing to show yet.' })
+    if (!shown || shown.change.isLoading) return body.createEl('p', { cls: 'rv-body rv-side-note', text: shown ? 'Loading…' : 'Nothing to show yet.' })
     const { project, change } = shown
-    if (change.files.length === 0) return el.createDiv({ cls: 'rv-muted rv-pad', text: 'Nothing changed, so there is nothing to connect yet.' })
+    if (change.files.length === 0) return body.createEl('p', { cls: 'rv-body rv-side-note', text: 'Nothing changed, so there is nothing to connect yet.' })
     const map = plugin.mapFor(change)
-    if (!map) return el.createDiv({ cls: 'rv-muted rv-pad', text: 'Reading how the files connect…' })
+    if (!map) return body.createEl('p', { cls: 'rv-body rv-side-note', text: 'Reading how the files connect…' })
     const order = buildOrder(change.files.map(f => f.path), map.edges)
     const result = resultOf(change.review)
-    if (plugin.panel === 'impact') this.renderImpact(el, change, map, order, result)
-    else this.renderConnections(el, project, change, map, order, result)
+    if (plugin.panel === 'impact') this.renderImpact(body, change, map, order, result)
+    else this.renderConnections(body, project, change, map, order, result)
   }
 
   /** Every file around the change in flow order, with lines from the chosen file to what it uses and what uses it. */
@@ -2558,27 +2607,33 @@ class SideView extends ItemView {
     const kind = kindOf.get(focus)
     const mark = MAP_MARKS[kind] || MAP_MARKS.untouched
     const info = result && result.files.find(f => f.file === focus)
+    const folderOf = file => {
+      const dir = path.dirname(file)
+      return dir === '.' ? '' : path.basename(dir)
+    }
 
     const look = el.createDiv({ cls: 'rv-look' })
-    look.createEl('span', { cls: 'rv-lab', text: 'Looking at' })
+    look.createEl('h3', { cls: 'rv-lab', text: 'Looking at' })
     const name = look.createDiv({ cls: 'rv-look-name' })
-    name.createEl('span', { cls: 'rv-mono rv-b6', text: path.basename(focus), attr: { title: focus } })
-    name.createEl('span', { cls: `rv-cap rv-${mark.tone}-text`, text: mark.label })
-    if (info && info.effect) look.createDiv({ cls: 'rv-body rv-muted', text: info.effect })
-    const open = look.createEl('button', { cls: 'rv-link', text: 'Open in editor ›' })
+    name.createEl('span', { cls: 'rv-m13 rv-look-file', text: path.basename(focus), attr: { title: focus } })
+    name.createEl('span', { cls: 'rv-cap rv-look-status', text: mark.label })
+    if (info && info.effect) look.createEl('p', { cls: 'rv-body rv-look-effect', text: info.effect })
+    const open = look.createEl('button', { cls: 'rv-link rv-look-open', text: 'Open in editor ›' })
     open.addEventListener('click', () => plugin.openProjectFile(project.root, focus))
 
-    el.createDiv({ cls: 'rv-lab rv-flow-title', text: 'In the order the change flows' })
+    el.createEl('h3', { cls: 'rv-lab rv-flow-title', text: 'In the order the change flows' })
     const rows = flowList(order, map.nodes, map.edges)
     const uses = map.edges.filter(e => e.from === focus).map(e => e.to)
     const usedBy = map.edges.filter(e => e.to === focus).map(e => e.from)
     const flow = el.createDiv({ cls: 'rv-flow' })
     rows.forEach(file => {
       const rel = file === focus ? 'here' : uses.includes(file) ? 'uses' : usedBy.includes(file) ? 'usedby' : ''
-      const m = MAP_MARKS[kindOf.get(file)] || MAP_MARKS.untouched
+      const k = kindOf.get(file) || 'untouched'
+      const m = MAP_MARKS[k] || MAP_MARKS.untouched
       const row = flow.createEl('button', { cls: `rv-flow-row${rel ? ` is-${rel}` : ''}`, attr: { title: `${file} · ${m.label}`, 'aria-pressed': String(rel === 'here') } })
-      row.createEl('span', { cls: `rv-flow-mark rv-${m.tone}-text`, text: m.letter })
-      row.createEl('span', { cls: `rv-mono rv-flow-name${kindOf.get(file) === 'untouched' ? ' is-faint' : ''}`, text: path.basename(file) })
+      row.createEl('span', { cls: `rv-m11 rv-flow-mark is-${k}`, text: m.letter })
+      row.createEl('span', { cls: `rv-m13 rv-ell rv-flow-name${k === 'untouched' ? ' is-faint' : ''}`, text: path.basename(file) })
+      row.createEl('span', { cls: 'rv-cap rv-flow-folder', text: folderOf(file) })
       row.addEventListener('click', () => plugin.showFile(file))
     })
     // Lines from the chosen file out to each file it is linked with, nearest first so they nest without crossing.
@@ -2587,20 +2642,20 @@ class SideView extends ItemView {
     const links = [...uses.map(f => [f, 'uses']), ...usedBy.map(f => [f, 'usedby'])].filter(([f]) => at.has(f)).sort((a, b) => Math.abs(at.get(a[0]) - from) - Math.abs(at.get(b[0]) - from))
     links.forEach(([file, rel], k) => {
       const to = at.get(file)
-      const width = 12 + k * 8
+      const width = 16 + k * 8
       const arc = flow.createDiv({ cls: `rv-arc is-${rel}` })
       arc.style.top = `${Math.min(to, from) * FLOW_ROW + FLOW_ROW / 2}px`
       arc.style.height = `${Math.abs(to - from) * FLOW_ROW}px`
       arc.style.width = `${width}px`
       const dot = flow.createDiv({ cls: `rv-arc-dot is-${rel}` })
       dot.style.top = `${to * FLOW_ROW + FLOW_ROW / 2 - 3.5}px`
-      dot.style.right = `${10 + width - 3.5}px`
+      dot.style.right = `${16 + width - 3.5}px`
     })
-    const legend = el.createDiv({ cls: 'rv-flow-legend' })
-    for (const k of ['edited', 'new', 'affected']) {
+    const legend = el.createDiv({ cls: 'rv-cap rv-flow-legend' })
+    for (const [k, word] of [['edited', 'edited'], ['new', 'new'], ['affected', 'affected']]) {
       const item = legend.createEl('span')
-      item.createEl('span', { cls: `rv-flow-mark rv-${MAP_MARKS[k].tone}-text`, text: MAP_MARKS[k].letter })
-      item.createEl('span', { text: ` ${MAP_MARKS[k].label.toLowerCase()}` })
+      item.createEl('span', { cls: `rv-m11 rv-flow-mark is-${k}`, text: MAP_MARKS[k].letter })
+      item.createEl('span', { text: word })
     }
 
     const how = (a, b) => {
@@ -2616,22 +2671,28 @@ class SideView extends ItemView {
       const group = groups.createDiv({ cls: 'rv-link-group' })
       const title = group.createDiv({ cls: 'rv-link-group-title' })
       title.createEl('span', { cls: `rv-swatch-line is-${rel}` })
-      title.createEl('span', { cls: 'rv-lab rv-grow', text: label })
-      title.createEl('span', { cls: 'rv-cap rv-faint', text: String(files.length) })
+      title.createEl('h3', { cls: 'rv-lab', text: label })
+      title.createEl('span', { cls: 'rv-cap rv-link-group-count', text: String(files.length) })
       for (const file of files) {
         const item = group.createEl('button', { cls: 'rv-hit', attr: { title: file } })
-        item.createEl('span', { cls: 'rv-mono rv-b6', text: path.basename(file) })
-        item.createEl('span', { cls: 'rv-muted rv-hit-how', text: howOf(file) || (rel === 'uses' ? `${path.basename(focus)} imports it` : `imports ${path.basename(focus)}`) })
+        item.createEl('span', { cls: 'rv-m13 rv-hit-name', text: path.basename(file) })
+        item.createEl('span', { cls: 'rv-body rv-hit-how', text: howOf(file) || (rel === 'uses' ? `${path.basename(focus)} imports it` : `imports ${path.basename(focus)}`) })
         item.addEventListener('click', () => plugin.showFile(file))
       }
     }
-    if (uses.length === 0 && usedBy.length === 0) groups.createDiv({ cls: 'rv-muted', text: 'No imports link this file to the others.' })
+    if (uses.length === 0 && usedBy.length === 0) {
+      const group = groups.createDiv({ cls: 'rv-link-group' })
+      const title = group.createDiv({ cls: 'rv-link-group-title' })
+      title.createEl('h3', { cls: 'rv-lab', text: 'Connections' })
+      title.createEl('span', { cls: 'rv-cap rv-link-group-count', text: '0' })
+      group.createEl('p', { cls: 'rv-body rv-side-note rv-link-group-note', text: 'No imports link this file to the others.' })
+    }
   }
 
   /** What the changes do to the app, file by file, and where each part of the request stands. */
   renderImpact(el, change, map, order, result) {
     const plugin = this.plugin
-    el.createEl('p', { cls: 'rv-muted rv-impact-intro', text: 'What these changes do to the app, file by file, and which part of your request each one moves.' })
+    el.createEl('p', { cls: 'rv-body rv-impact-intro', text: 'What these changes do to the app, file by file, and which part of your request each one moves.' })
     const infoOf = new Map(result ? result.files.map(f => [f.file, f]) : [])
     const byPath = new Map(change.files.map(f => [f.path, f]))
     const kindOf = new Map(map.nodes.map(n => [n.path, n.kind]))
@@ -2644,37 +2705,41 @@ class SideView extends ItemView {
     for (const [kind, files] of groups) {
       if (files.length === 0) continue
       const m = MAP_MARKS[kind]
-      const group = el.createDiv({ cls: 'rv-link-group' })
+      const group = el.createDiv({ cls: 'rv-link-group rv-impact-group' })
       const title = group.createDiv({ cls: 'rv-link-group-title' })
-      title.createEl('span', { cls: `rv-flow-mark rv-${m.tone}-text`, text: m.letter })
-      title.createEl('span', { cls: 'rv-lab rv-grow', text: m.label })
-      title.createEl('span', { cls: 'rv-cap rv-faint', text: String(files.length) })
+      title.createEl('span', { cls: `rv-m11 rv-flow-mark is-${kind}`, text: m.letter })
+      title.createEl('h3', { cls: 'rv-lab', text: m.label })
+      title.createEl('span', { cls: 'rv-cap rv-link-group-count', text: String(files.length) })
       for (const file of files) {
-        const item = group.createEl('button', { cls: 'rv-hit', attr: { title: file } })
+        const item = group.createEl('button', { cls: 'rv-hit rv-impact-hit', attr: { title: file } })
         const top = item.createDiv({ cls: 'rv-impact-top' })
-        top.createEl('span', { cls: 'rv-mono rv-strong', text: path.basename(file) })
+        top.createEl('span', { cls: 'rv-m13 rv-hit-name', text: path.basename(file) })
         const serves = result ? result.requirements.filter(r => pointsAt(r.evidence, file)).map(r => r.id).join(' ') : ''
-        if (serves) top.createEl('span', { cls: 'rv-mono rv-muted rv-push', text: serves })
+        if (serves) top.createEl('span', { cls: 'rv-m11 rv-impact-serves', text: serves })
         const changed = byPath.get(file)
         const info = infoOf.get(file)
         const used = map.edges.filter(e => e.from === file && byPath.has(e.to)).map(e => path.basename(e.to))
         const effect = info && info.effect ? info.effect : kind === 'affected' ? `Uses ${used.join(', ') || 'a changed file'}, so the change reaches it. Not edited.` : changed ? `${changed.added} lines added, ${changed.removed} removed.` : ''
-        item.createEl('span', { cls: 'rv-muted rv-hit-how', text: change.outside.includes(file) && change.turns.length ? `${effect} No Claude change recorded.` : effect })
+        item.createEl('span', { cls: 'rv-body rv-hit-how', text: change.outside.includes(file) && change.turns.length ? `${effect} No Claude change recorded.` : effect })
         item.addEventListener('click', () => plugin.showFile(file))
       }
     }
 
-    el.createEl('div', { cls: 'rv-lab rv-side-section', text: 'Your request, after these changes' })
-    if (!result) return el.createDiv({ cls: 'rv-muted', text: 'Review these changes to see which parts of your request each file moves.' })
-    if (result.requirements.length === 0) return el.createDiv({ cls: 'rv-muted', text: 'The review found no request to check these changes against.' })
+    const asked = el.createDiv({ cls: 'rv-side-section' })
+    asked.createEl('h3', { cls: 'rv-lab', text: 'Your request, after these changes' })
+    if (!result) return asked.createEl('p', { cls: 'rv-body rv-side-note', text: 'Review these changes to see which parts of your request each file moves.' })
+    if (result.requirements.length === 0) return asked.createEl('p', { cls: 'rv-body rv-side-note', text: 'The review found no request to check these changes against.' })
+    const parts = asked.createDiv({ cls: 'rv-parts' })
     for (const r of result.requirements) {
-      const line = el.createDiv({ cls: 'rv-part' })
-      line.createEl('span', { cls: 'rv-id', text: r.id })
-      const words = line.createDiv({ cls: 'rv-grow' })
+      const tone = STATUS_TONES[r.status] || 'muted'
+      parts.createEl('span', { cls: `rv-m11 rv-part-id${r.status === 'done' ? ' is-done' : ''}`, text: r.id })
+      const words = parts.createEl('span', { cls: 'rv-body rv-part-text' })
       words.createEl('span', { text: r.text })
       const files = [...new Set(r.evidence.map(e => path.basename(e.file)))]
-      if (files.length) words.createEl('span', { cls: 'rv-muted', text: ` · ${files.join(', ')}` })
-      chip(line, r.status, STATUS_TONES[r.status] || 'muted')
+      if (files.length) words.createEl('span', { cls: 'rv-part-files', text: ` · ${files.join(', ')}` })
+      const status = parts.createEl('span', { cls: `rv-cap rv-part-status rv-${tone}-text` })
+      if (r.status === 'done') setIcon(status.createEl('span', { cls: 'rv-part-check' }), 'check')
+      status.createEl('span', { text: r.status })
     }
   }
 
@@ -2683,8 +2748,11 @@ class SideView extends ItemView {
     const trace = this.plugin.trace
     const box = el.createDiv({ cls: 'rv-trace' })
     const shown = this.plugin.current()
-    if (!shown) return box.createDiv({ cls: 'rv-muted', text: 'Add a project to trace names in it.' })
-    const input = box.createEl('input', { cls: 'rv-trace-input', attr: { id: 'rv-trace-input', type: 'search', placeholder: 'A function, variable or component name', 'aria-label': 'Name to trace' } })
+    if (!shown) return box.createEl('p', { cls: 'rv-body rv-side-note', text: 'Add a project to trace names in it.' })
+    box.createEl('p', { cls: 'rv-body rv-trace-intro', text: 'Follow one name through every file that uses it, in the order the change flows.' })
+    const field = box.createDiv({ cls: 'rv-trace-field' })
+    setIcon(field.createEl('span', { cls: 'rv-trace-icon' }), 'search')
+    const input = field.createEl('input', { cls: 'rv-fld rv-trace-input', attr: { id: 'rv-trace-input', type: 'search', placeholder: 'A function, variable or component name', 'aria-label': 'Name to trace' } })
     input.value = trace ? trace.symbol : ''
     input.addEventListener('keydown', event => {
       if (event.key !== 'Enter' || !input.value.trim()) return
@@ -2693,24 +2761,34 @@ class SideView extends ItemView {
       this.plugin.runTrace(shown.project.root, input.value.trim())
     })
     if (!trace) {
-      box.createDiv({ cls: 'rv-muted', text: 'Press Enter to see where that name is defined and where else it is used.' })
+      const hint = box.createDiv({ cls: 'rv-side-section' })
+      hint.createEl('h3', { cls: 'rv-lab', text: 'What you will see' })
+      const steps = hint.createDiv({ cls: 'rv-trace-steps' })
+      for (const [n, words] of [['1', 'Where the name is defined'], ['2', 'Every other place that uses it, file by file']]) {
+        steps.createEl('span', { cls: 'rv-cap rv-trace-step-n', text: n })
+        steps.createEl('span', { cls: 'rv-body rv-trace-step', text: words })
+      }
       return
     }
-    if (trace.state === 'running') return box.createDiv({ cls: 'rv-muted', text: 'Searching…' })
-    if (trace.state === 'failed') return box.createDiv({ cls: 'rv-muted', text: 'Trace needs git, and the project to be a git repository.' })
+    if (trace.state === 'running') return box.createEl('p', { cls: 'rv-body rv-trace-state', text: 'Searching…' })
+    if (trace.state === 'failed') return box.createEl('p', { cls: 'rv-body rv-trace-state', text: 'Trace needs git, and the project to be a git repository.' })
+    const results = box.createDiv({ cls: 'rv-link-groups' })
     for (const [title, hits] of [['Defined in', trace.definitions], ['Also used in', trace.uses]]) {
-      const card = box.createDiv({ cls: 'rv-card' })
-      card.createDiv({ cls: 'rv-muted rv-strong', text: title })
-      if (hits.length === 0) card.createDiv({ cls: 'rv-muted', text: 'Nowhere else.' })
+      const group = results.createDiv({ cls: 'rv-link-group' })
+      const head = group.createDiv({ cls: 'rv-link-group-title' })
+      head.createEl('h3', { cls: 'rv-lab', text: title })
+      head.createEl('span', { cls: 'rv-cap rv-link-group-count', text: String(hits.length) })
+      if (hits.length === 0) group.createEl('p', { cls: 'rv-body rv-side-note', text: 'Nowhere else.' })
       for (const hit of hits) {
-        const row = card.createEl('button', { cls: 'rv-hit', attr: { title: hit.text } })
-        row.createEl('span', { cls: 'rv-mono', text: `${hit.file}:${hit.line}` })
-        row.createEl('span', { cls: 'rv-hit-text', text: hit.text })
+        const row = group.createEl('button', { cls: 'rv-hit', attr: { title: hit.text } })
+        row.createEl('span', { cls: 'rv-m13 rv-hit-name rv-ell', text: `${hit.file}:${hit.line}` })
+        row.createEl('span', { cls: 'rv-m11 rv-hit-text', text: hit.text })
         row.addEventListener('click', () => this.plugin.openProjectFile(trace.root, hit.file))
       }
     }
   }
 }
+
 
 // ---------- settings ----------
 
