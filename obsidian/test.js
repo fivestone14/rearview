@@ -412,8 +412,34 @@ test('a short reply keeps the question Claude asked before it, and the review is
   const files = [{ path: 'a.ts', change: 'edited', diff: '+b' }]
   const project = { root: '/p', turns, git: { commits: [], worktree: { id: 'wt:/p', isWorktree: true, files } } }
   const change = plugin.changeOf(project, project.git.worktree)
-  assert.deepStrictEqual(change.asks, [{ text: 'Yes, build it', answered: 'Does the Changed / Why / Fits? format work?' }])
+  assert.deepStrictEqual(change.asks.map(a => [a.text, a.answered]), [['Yes, build it', 'Does the Changed / Why / Fits? format work?']])
   assert.deepStrictEqual(change.requests, ['Yes, build it (answering: "Does the Changed / Why / Fits? format work?")'])
+})
+
+test('changes are grouped under the request they came from, and what nobody asked for is set apart', () => {
+  const review = t.parseReview(JSON.stringify({
+    asks: [{ n: 1, meaning: 'Stop false flags from shell edits.' }, { n: 2, meaning: 'Fold every file.' }],
+    files: [{ file: 'main.js', changes: [
+      { title: 'Spot command writes', from: 10, ask: 1, fits: 'yes' },
+      { title: 'Fold cards', from: 20, ask: 2, fits: 'yes' },
+      { title: 'Open from sidebar', from: 30, ask: 2, fits: 'partly', serves: 'opens the card too' },
+      { title: 'Hide Then lines', from: 40, ask: 0, fits: 'no' },
+    ] }],
+  }))
+  assert.strictEqual(review.files[0].changes[2].fits, 'further', 'an old "partly" reads as "goes further"')
+  // The review was given two requests; a third arrived since, so numbers are read against the review's own list.
+  const done = { state: 'done', reviewedAt: 1, result: t.resultOf({ state: 'done', result: review }), requests: ['Yes, fix it', 'Collapse them all'] }
+  const asks = [{ text: 'Summarize in short' }, { text: 'Yes, fix it' }, { text: 'Collapse them all' }]
+  const entries = review.files[0].changes.map((c, k) => ({ file: 'main.js', k, c, review: done, result: done.result }))
+  const { groups, extras } = t.groupByRequest(asks, entries)
+  assert.deepStrictEqual(groups.map(g => [g.ask.text, g.meaning, g.changes.map(e => e.c.title)]), [
+    ['Summarize in short', '', []],
+    ['Yes, fix it', 'Stop false flags from shell edits.', ['Spot command writes']],
+    ['Collapse them all', 'Fold every file.', ['Fold cards', 'Open from sidebar']],
+  ])
+  assert.deepStrictEqual(extras.map(e => e.c.title), ['Hide Then lines'])
+  const prompt = t.reviewPrompt({ requests: ['Yes, fix it', 'Collapse them all'], files: [], order: [], edges: [], outside: [], filesRead: [], agentMessages: '' })
+  assert.match(prompt, /REQUESTS:\n1\. Yes, fix it\n2\. Collapse them all/)
 })
 
 // ---------- Git ----------

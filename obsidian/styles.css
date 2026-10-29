@@ -425,3 +425,26 @@
 .rv .rv-ask-question { display: flex; gap: 8px; align-items: baseline; font-size: var(--font-ui-small); color: var(--text-muted); }
 .rv .rv-ask-reply { display: flex; gap: 8px; align-items: baseline; }
 .rv .rv-ask-who { flex: none; min-width: 84px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint); }
+
+/* Main tab, by request: each thing asked, what it meant, and the changes it led to */
+.rv .rv-view-modes { align-self: flex-start; width: max-content; margin: 2px 0 6px; }
+.rv .rv-req { margin-bottom: 14px; overflow: hidden; border: 1px solid var(--background-modifier-border); border-radius: 14px; background: var(--background-primary); }
+.rv .rv-req.is-extra { border-color: rgba(var(--color-purple-rgb), 0.4); background: rgba(var(--color-purple-rgb), 0.06); }
+.rv .rv-req-head { display: flex; flex-direction: column; gap: 6px; padding: 14px 18px; border-bottom: 1px solid var(--background-modifier-border); background: var(--background-secondary); }
+.rv .rv-req.is-extra .rv-req-head { background: transparent; }
+.rv .rv-req-top { display: flex; align-items: center; gap: 10px; }
+.rv .rv-req-id { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 8px; background: rgba(var(--interactive-accent-rgb), 0.2); color: var(--text-accent); font-size: 12px; font-weight: 700; }
+.rv .rv-req-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-accent); }
+.rv .rv-req-line { display: flex; gap: 8px; align-items: baseline; }
+.rv .rv-req-line.is-asked { font-size: var(--font-ui-small); color: var(--text-muted); }
+.rv .rv-req-line.is-said { font-size: var(--font-ui-medium); color: var(--text-normal); }
+.rv .rv-req-line.is-meaning { padding-top: 2px; font-size: var(--font-ui-medium); font-weight: 500; color: var(--text-normal); }
+.rv .rv-req-line.is-meaning .rv-ask-who { color: var(--color-green); }
+.rv .rv-req-changes { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px 12px; }
+.rv .rv-req-count { padding: 4px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.rv .rv-req-change { display: flex; align-items: flex-start; justify-content: flex-start; gap: 12px; width: 100%; height: auto; padding: 9px 8px; border: 0; border-radius: 10px; background: transparent; box-shadow: none; text-align: left; font-weight: normal; cursor: pointer; }
+.rv .rv-req-change:hover { background: var(--background-modifier-hover); }
+.rv .rv-req-change > .rv-chip { margin-top: 2px; }
+.rv .rv-req-file { padding: 0 6px; border-radius: 5px; background: var(--background-modifier-hover); font-size: 11.5px; color: var(--text-muted); }
+.rv .rv-req-note { font-size: var(--font-ui-small); color: var(--color-orange); }
+.rv .rv-req-undo { align-self: flex-start; margin: -2px 0 6px 118px; }

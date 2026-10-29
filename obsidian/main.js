@@ -583,17 +583,19 @@ const AUTO_REVIEW_QUIET_MS = 45000
 const REVIEW_SYSTEM = `You review the changes an AI coding agent made to a project, for a person who may not read code.
 Reply with one JSON object only, no prose, in exactly this shape:
 {
+  "asks": [{ "n": 1, "meaning": "one plain sentence: what this request was really asking for" }],
   "requirements": [{ "text": "short restatement", "quote": "the person's own words", "status": "done|partly|missed", "finding": "one plain sentence", "evidence": [{ "file": "path", "line": 12 }] }],
-  "files": [{ "file": "path", "did": "at most two short plain sentences: what the agent did in this file", "why": "one plain sentence: why it did it", "effect": "one plain sentence: what this does to the app", "next": "one plain sentence on how this file leads to the next one in FILES IN ORDER; empty unless the two really work together", "changes": [{ "title": "at most 8 plain words", "from": 12, "to": 18, "before": "at most 8 words: what was there or happened before", "now": "at most 8 words: what it does now", "why": "at most 12 words: why, in the person's terms", "fits": "yes|partly|no", "serves": "at most 8 words: the person's own words this serves, or, for no, why the agent added it anyway", "used": [{ "file": "path", "line": 6, "how": "at most 6 plain words" }] }] }],
+  "files": [{ "file": "path", "did": "at most two short plain sentences: what the agent did in this file", "why": "one plain sentence: why it did it", "effect": "one plain sentence: what this does to the app", "next": "one plain sentence on how this file leads to the next one in FILES IN ORDER; empty unless the two really work together", "changes": [{ "title": "at most 8 plain words", "from": 12, "to": 18, "before": "at most 8 words: what was there or happened before", "now": "at most 8 words: what it does now", "why": "at most 12 words: why, in the person's terms", "ask": 1, "fits": "yes|further|no", "serves": "at most 12 words: for further, what it adds beyond the request; for no, why the agent added it", "used": [{ "file": "path", "line": 6, "how": "at most 6 plain words" }] }] }],
   "links": [{ "from": "path", "to": "path", "how": "at most 8 plain words" }],
   "notes": [{ "file": "path", "line": 12, "why": "plain English, at most 25 words", "source": "stated|inferred|none", "symbols": ["nameInThatLine"] }],
   "steps": [{ "kind": "plan|explored|decision|shortcut|unrequested|skipped", "title": "short", "why": "one plain sentence", "source": "stated|inferred|none", "evidence": [{ "file": "path", "line": 12 }] }],
   "violations": [{ "guardrail": "the guardrail's words", "finding": "one plain sentence", "evidence": [{ "file": "path", "line": 12 }] }]
 }
 Rules:
+- asks: one entry for each numbered request in REQUESTS, saying what it was really asking for, read with the question it answered.
 - requirements: split the REQUESTS into each separate thing they ask for. Judge each only from the DIFFS.
 - files: one entry for every file in FILES IN ORDER, in that order. Files under CHANGED BY AN AGENT COMMAND are the agent's work, done with a shell command instead of an edit. For files under NO AGENT CHANGE RECORDED, say what changed, never that the agent did it.
-- changes: the non-trivial changes in each file (new functions, logic, wiring between files), in line order, at most 8. Skip imports, renames and one-line tweaks, but always include a change nobody asked for. from/to are line numbers in the new file. before/now/why use plain words, no code names. fits says whether the change matches the REQUESTS: "yes", "partly", or "no" for something nobody asked for. used says where in OTHER files this code is used, or what it uses there; only files from CONNECTIONS or FILES IN ORDER.
+- changes: the non-trivial changes in each file (new functions, logic, wiring between files), in line order, at most 8. Skip imports, renames and one-line tweaks, but always include a change nobody asked for. from/to are line numbers in the new file. before/now/why use plain words, no code names. ask is the number of the request in REQUESTS this change serves, or 0 when none asked for it. fits is "yes" when it does what that request asked, "further" when it goes beyond it, "no" when nobody asked for it. used says where in OTHER files this code is used, or what it uses there; only files from CONNECTIONS or FILES IN ORDER.
 - links: one entry for each pair in CONNECTIONS, saying how the first file uses the second.
 - notes: at most 25, most important first: every added import and every new call before anything else. Lines are line numbers in the new file.
 - source is "stated" only when the AGENT MESSAGES give that reason, "inferred" when you work it out from the code, "none" when nothing explains it.
@@ -615,7 +617,7 @@ function reviewPrompt(change) {
   const diffs = ordered.map(f => `### ${f.path} (${f.change})\n${f.isSecret ? '(contents hidden: looks like a secrets file)' : f.diff}`).join('\n')
   const list = (items, empty = '(none)') => (items && items.length ? items.join('\n') : empty)
   return [
-    `REQUESTS:\n${list(change.requests, '(none found: these changes may not come from the agent)')}`,
+    `REQUESTS:\n${list((change.requests || []).map((r, i) => `${i + 1}. ${r}`), '(none found: these changes may not come from the agent)')}`,
     `GUARDRAILS:\n${list(change.guardrails)}`,
     `FILES IN ORDER:\n${list(ordered.map(f => f.path))}`,
     `CHANGED BY AN AGENT COMMAND:\n${list(change.byCommand)}`,
@@ -673,7 +675,9 @@ function parseReview(text) {
         before: str(item.before),
         now: str(item.now),
         why: str(item.why),
-        fits: oneOf(item.fits, ['yes', 'partly', 'no'], ''),
+        ask: Number.isInteger(item.ask) && item.ask >= 0 ? item.ask : null,
+        // "partly" is what reviews said before "further" existed.
+        fits: oneOf(item.fits === 'partly' ? 'further' : item.fits, ['yes', 'further', 'no'], ''),
         serves: str(item.serves),
         used: list(item.used).filter(u => str(u.file)).map(u => ({ file: str(u.file), line: line(u.line), how: str(u.how) })),
       }))
@@ -686,8 +690,11 @@ function parseReview(text) {
   const violations = list(json.violations)
     .filter(item => str(item.guardrail) && str(item.finding))
     .map(item => ({ guardrail: str(item.guardrail), finding: str(item.finding), evidence: evidence(item.evidence) }))
+  const asks = list(json.asks)
+    .filter(item => Number.isInteger(item.n) && item.n > 0 && str(item.meaning))
+    .map(item => ({ n: item.n, meaning: str(item.meaning) }))
   if (requirements.length === 0 && notes.length === 0 && steps.length === 0 && files.length === 0) return null
-  return { requirements, files, links, notes, steps, violations }
+  return { asks, requirements, files, links, notes, steps, violations }
 }
 
 // ---------- Review model: CLI tools you already use, hosted APIs with a key, or a model on this computer ----------
@@ -1037,6 +1044,8 @@ class RearviewPlugin extends Plugin {
     this.expanded = new Set()
     /** Projects closed in the sidebar, by root. */
     this.collapsed = new Set()
+    /** The main view groups changes by request (the default) or by file. */
+    this.viewMode = 'request'
     /** File cards opened in the main view (all start closed), as `<change id>:<path>`. */
     this.openCards = new Set()
     /** File cards whose code is not in its default state (closed with a breakdown, open without), as `<change id>:<path>`. */
@@ -1110,7 +1119,7 @@ class RearviewPlugin extends Plugin {
     for (const t of turns) {
       const text = requestText(t.request)
       if (!text || asks.some(a => a.text === text)) continue
-      asks.push({ text, answered: text.length <= SHORT_REPLY_CHARS && t.answered ? t.answered : '' })
+      asks.push({ text, answered: text.length <= SHORT_REPLY_CHARS && t.answered ? t.answered : '', at: t.startedAt })
     }
     return {
       id: item.id,
@@ -1260,7 +1269,7 @@ class RearviewPlugin extends Plugin {
       const prompt = reviewPrompt({ ...change, files, order, edges, outside, guardrails: this.guardrailsOn() })
       const result = parseReview(await runModel(this.settings.review, REVIEW_SYSTEM, prompt, name => this.getSecret(name), requestUrl))
       this.reviews[key] = result
-        ? { state: 'done', result, by, reviewedAt: Date.now(), signature, file: next.file }
+        ? { state: 'done', result, by, reviewedAt: Date.now(), signature, file: next.file, requests: change.asks.map(a => a.text) }
         : { state: 'failed', reason: `${by} answered, but not with the review asked for. Try again, or choose a stronger model.`, by, reviewedAt: Date.now(), signature, file: next.file }
     } catch (error) {
       this.reviews[key] = { state: 'failed', reason: error.message, by, reviewedAt: Date.now(), signature, file: next.file }
@@ -1851,7 +1860,7 @@ function pickReview(whole, own) {
 /** A finished review's result with every list present (reviews saved before a field existed lack it); null without one. */
 function resultOf(review) {
   if (!review || review.state !== 'done') return null
-  return { requirements: [], files: [], links: [], notes: [], steps: [], violations: [], ...review.result }
+  return { asks: [], requirements: [], files: [], links: [], notes: [], steps: [], violations: [], ...review.result }
 }
 
 const pointsAt = (evidence, file) => (evidence || []).some(e => e.file === file)
@@ -1861,7 +1870,7 @@ const sentence = text => (text || '').trim().replace(/([^.!?])$/, '$1.')
 /** A file gets a numbered breakdown only with at least this many non-trivial changes; below it the lead line says it all. */
 const BREAKDOWN_MIN = 2
 /** How a change's fit with the request is marked: its tag and colour. */
-const FITS = { yes: ['fits', 'green'], partly: ['partly', 'orange'], no: ['not asked for', 'purple'] }
+const FITS = { yes: ['matches', 'green'], further: ['goes further', 'orange'], no: ['not asked for', 'purple'] }
 /** Breakdown colours, as CSS classes, one per change in order. */
 const CHANGE_COLORS = 6
 
@@ -2069,7 +2078,17 @@ function renderChange(el, shown, plugin) {
     el.createEl('p', { cls: 'rv-sub', text: 'Nothing is uncommitted. As Claude edits files here, the changes show up in this view, file by file.' })
     return
   }
-  el.createEl('p', { cls: 'rv-sub', text: 'Read top to bottom: the files are in the order they build on each other, starting with the piece the others use.' })
+  const byRequest = plugin.viewMode !== 'file'
+  const modes = el.createDiv({ cls: 'rv-seg rv-view-modes', attr: { role: 'group', 'aria-label': 'Show changes' } })
+  for (const [id, label] of [['request', 'By request'], ['file', 'By file']]) {
+    const isOn = (id === 'request') === byRequest
+    const button = modes.createEl('button', { cls: isOn ? 'is-active' : '', text: label, attr: { 'aria-pressed': String(isOn) } })
+    button.addEventListener('click', () => {
+      plugin.viewMode = id
+      plugin.refresh([TURN_VIEW])
+    })
+  }
+  el.createEl('p', { cls: 'rv-sub', text: byRequest ? 'Each thing you asked, what it meant, and the changes it led to. Anything Claude did on its own is set apart at the end.' : 'Read top to bottom: the files are in the order they build on each other, starting with the piece the others use.' })
   if (review.state === 'failed') el.createDiv({ cls: 'rv-callout rv-red', text: `The review did not finish: ${review.reason}` })
   if (change.isStale) el.createDiv({ cls: 'rv-callout rv-orange', text: 'The files changed after this review, so some notes may be out of date. Review again to catch up.' })
 
@@ -2080,6 +2099,11 @@ function renderChange(el, shown, plugin) {
   // Changed files linked by imports to another changed file; buildOrder puts the rest after them.
   const linked = new Set(edges.filter(e => shownPaths.has(e.from) && shownPaths.has(e.to)).flatMap(e => [e.from, e.to]))
 
+  if (byRequest) {
+    renderByRequest(el, { change, order, project, plugin })
+    renderAffected(el, map, shownPaths, plugin)
+    return
+  }
   renderRequest(el, change, result, plugin)
   renderApproach(el, change, result, shownPaths, project, plugin)
 
@@ -2114,6 +2138,130 @@ function renderChange(el, shown, plugin) {
   })
 
   renderAffected(el, map, shownPaths, plugin)
+}
+
+/**
+ * Every change of every file, each with the review it came from: the file's own review or the whole change's,
+ * whichever finished last, as the file cards use.
+ */
+function changesByFile(change, order, plugin) {
+  const all = []
+  for (const filePath of order) {
+    const own = plugin.reviews[reviewKey(change.id, filePath)] || null
+    const chosen = pickReview(change.review, own)
+    const result = resultOf(chosen)
+    const info = result ? result.files.find(f => f.file === filePath) : null
+    for (const [k, c] of ((info && info.changes) || []).entries()) all.push({ file: filePath, k, c, review: chosen, result })
+  }
+  return all
+}
+
+/**
+ * The changes grouped under the request they came from. A change names its request by number in the list its
+ * review was given (kept with the review), so a request that arrived later does not shift it; one that names
+ * no request, or that nobody asked for, goes to `extras`.
+ */
+function groupByRequest(asks, entries) {
+  const groups = asks.map(ask => ({ ask, meaning: '', changes: [] }))
+  const extras = []
+  for (const entry of entries) {
+    const { c, review, result } = entry
+    const texts = (review && review.requests) || asks.map(a => a.text)
+    const text = c.ask ? texts[c.ask - 1] : null
+    const group = text ? groups.find(g => g.ask.text === text) : null
+    if (!group || c.fits === 'no') {
+      extras.push(entry)
+      continue
+    }
+    group.changes.push(entry)
+    const meant = result && result.asks.find(a => a.n === c.ask)
+    if (meant && !group.meaning) group.meaning = meant.meaning
+  }
+  return { groups, extras }
+}
+
+/** The main view by request: each thing asked, what it meant, and the changes it led to; then what nobody asked for. */
+function renderByRequest(el, { change, order, project, plugin }) {
+  const entries = changesByFile(change, order, plugin)
+  const { groups, extras } = groupByRequest(change.asks, entries)
+  if (change.asks.length === 0) {
+    el.createDiv({ cls: 'rv-card rv-muted', text: change.isWorktree ? 'No Claude Code request led to these changes, so there is nothing to group them by. See them By file.' : 'No Claude Code request is on record for this commit. See its changes By file.' })
+    return
+  }
+  if (entries.length === 0) el.createDiv({ cls: 'rv-callout rv-muted', text: 'Review these changes to see which request each change came from.' })
+
+  const openChange = entry => {
+    const key = `${change.id}:${entry.file}`
+    plugin.viewMode = 'file'
+    plugin.openCards.add(key)
+    plugin.toggledCode.add(key)
+    plugin.activeChange = `${key}:${entry.k}`
+    plugin.focus = entry.file
+    plugin.refresh([TURN_VIEW, SIDE_VIEW])
+    const target = [...document.querySelectorAll('.rv-change-head')].find(e => e.dataset.key === plugin.activeChange) || [...document.querySelectorAll('.rv-file')].find(e => e.dataset.path === entry.file)
+    if (target) target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+  const changeRow = (parent, entry) => {
+    const { c } = entry
+    const row = parent.createEl('button', { cls: `rv-req-change${c.fits === 'no' ? ' is-extra' : ''}`, attr: { title: 'Open this change in its file' } })
+    if (c.fits) chip(row, FITS[c.fits][0], FITS[c.fits][1])
+    const words = row.createDiv({ cls: 'rv-change-words' })
+    const top = words.createDiv({ cls: 'rv-change-top' })
+    top.createEl('span', { cls: 'rv-change-title', text: c.title })
+    top.createEl('span', { cls: 'rv-mono rv-req-file', text: path.basename(entry.file) })
+    top.createEl('span', { cls: 'rv-mono rv-change-lines', text: c.from === c.to ? `line ${c.from}` : `lines ${c.from}–${c.to}` })
+    if (c.before && c.now) {
+      const line = words.createDiv({ cls: 'rv-change-value' })
+      line.createEl('span', { cls: 'rv-change-before', text: c.before })
+      line.createEl('span', { text: ` → ${c.now}` })
+    } else if (c.what) words.createDiv({ cls: 'rv-change-value', text: c.what })
+    if (c.why) whyLine(words, c.why)
+    if (c.fits === 'further' && c.serves) words.createDiv({ cls: 'rv-req-note', text: `Goes beyond what you asked: ${c.serves}` })
+    row.addEventListener('click', () => openChange(entry))
+    return row
+  }
+
+  groups.forEach((group, i) => {
+    const section = el.createDiv({ cls: 'rv-req' })
+    const head = section.createDiv({ cls: 'rv-req-head' })
+    const top = head.createDiv({ cls: 'rv-req-top' })
+    top.createEl('span', { cls: 'rv-req-id', text: `R${i + 1}` })
+    top.createEl('span', { cls: 'rv-req-label', text: 'From the conversation' })
+    if (group.ask.at) top.createEl('span', { cls: 'rv-muted', text: relativeTime(group.ask.at) })
+    const matched = group.changes.filter(e => e.c.fits === 'yes').length
+    const further = group.changes.filter(e => e.c.fits === 'further').length
+    if (group.changes.length) {
+      const verdict = further ? `${matched} match · ${further} ${FITS.further[0]}` : `all ${matched} match`
+      chip(top, group.changes.length === 1 && !further ? 'matches' : verdict, further ? 'orange' : 'green').addClass('rv-push')
+    }
+    const exchange = (who, text, cls) => {
+      const line = head.createDiv({ cls: `rv-req-line ${cls}` })
+      line.createEl('span', { cls: 'rv-ask-who', text: who })
+      line.createEl('span', { text })
+    }
+    if (group.ask.answered) exchange('Claude asked', group.ask.answered, 'is-asked')
+    exchange('You said', group.ask.text, 'is-said')
+    if (group.meaning) exchange('Meaning', group.meaning, 'is-meaning')
+
+    const list = section.createDiv({ cls: 'rv-req-changes' })
+    if (group.changes.length === 0) list.createDiv({ cls: 'rv-muted', text: entries.length ? 'No change in these files came from this.' : '' })
+    else list.createDiv({ cls: 'rv-req-count', text: group.changes.length === 1 ? '1 change it led to' : `${group.changes.length} changes it led to` })
+    for (const entry of group.changes) changeRow(list, entry)
+  })
+
+  if (extras.length) {
+    const section = el.createDiv({ cls: 'rv-req is-extra' })
+    const head = section.createDiv({ cls: 'rv-req-head' })
+    const top = head.createDiv({ cls: 'rv-req-top' })
+    top.createEl('span', { cls: 'rv-req-label', text: 'Not from anything you asked' })
+    top.createEl('span', { cls: 'rv-muted', text: 'changes Claude made on its own · check these first' })
+    const list = section.createDiv({ cls: 'rv-req-changes' })
+    for (const entry of extras) {
+      changeRow(list, entry)
+      const undo = list.createEl('button', { cls: 'rv-link rv-req-undo', text: 'Ask Claude to undo ›' })
+      undo.addEventListener('click', () => plugin.draftSteer(`Undo "${entry.c.title}" in ${entry.file}: I did not ask for it.`))
+    }
+  }
 }
 
 /** "You asked": the person's requests behind these changes, how each part went, and the gaps to send back. */
@@ -2227,9 +2375,9 @@ function renderFileCard(el, { file, step, info, isOutside, change, result, ownSt
   const [label, tone] = CHANGE_LABELS[file.change] || ['Changed', 'muted']
   chip(head, label, tone)
   // How the changes fit the request, counted, so a folded card still shows anything nobody asked for.
-  for (const fit of ['yes', 'partly', 'no']) {
+  for (const fit of ['yes', 'further', 'no']) {
     const n = allChanges.filter(c => c.fits === fit).length
-    if (n) chip(head, fit === 'yes' ? `${n} fit` : `${n} ${FITS[fit][0]}`, FITS[fit][1])
+    if (n) chip(head, `${n} ${FITS[fit][0]}`, FITS[fit][1])
   }
   counts(head, file.added, file.removed).addClass('rv-push')
   setIcon(head.createEl('span', { cls: `rv-chevron${isCardOpen ? ' is-open' : ''}` }), 'chevron-right')
@@ -2727,4 +2875,4 @@ class RearviewSettingTab extends PluginSettingTab {
 }
 
 module.exports = RearviewPlugin
-module.exports.testing = { SideView, lastQuestion, commandWrites, REVIEW_SYSTEM, reviewKey, pickReview, breakdownOf, changeAt, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, thenLine, resultOf, findImporters, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
+module.exports.testing = { SideView, groupByRequest, changesByFile, lastQuestion, commandWrites, REVIEW_SYSTEM, reviewKey, pickReview, breakdownOf, changeAt, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, thenLine, resultOf, findImporters, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
