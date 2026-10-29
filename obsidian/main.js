@@ -74,11 +74,36 @@ function score(turn) {
   return { label: `${done}/${reqs.length}`, tone: done === reqs.length ? 'green' : done * 2 >= reqs.length ? 'orange' : 'red' }
 }
 
-/** A turn's first line, without the `<tag>…</tag>` blocks Claude Code wraps around context it adds to a request. */
+/** A request without the `<tag>…</tag>` blocks Claude Code wraps around context it adds, so only the person's words remain. */
+function requestText(request) {
+  return (request || '')
+    .replace(/<([a-z][\w-]*)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\n\s*\n\s*\n+/g, '\n\n')
+    .trim()
+}
+
+/** A turn's first line of request text, at most 60 characters. */
 function titleOf(request) {
-  const text = (request || '').replace(/<([a-z][\w-]*)[^>]*>[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
-  const first = text.split('\n').map(line => line.trim()).find(Boolean) || ''
+  const first = requestText(request).split('\n').map(line => line.trim()).find(Boolean) || ''
   return first.length > 60 ? `${first.slice(0, 57)}…` : first || '(no request text)'
+}
+
+/**
+ * One message listing what the review found partly done, missed, not requested or against a principle,
+ * or '' when there are no gaps. It goes into the Steer box, so the person reads and edits it before sending.
+ */
+function gapsMessage(result) {
+  const gaps = [
+    ...result.requirements.filter(r => r.status !== 'done').map(r => `${r.text} (${r.status}): ${r.finding}`),
+    ...result.steps.filter(s => s.kind === 'unrequested').map(s => `Not requested: ${s.title}. Revert it unless it is needed.`),
+    ...result.violations.map(v => `Goes against principle "${v.principleId}": ${v.finding}`),
+  ]
+  if (gaps.length === 0) return ''
+  return (
+    'A review of your last turn flagged these gaps. It can be wrong, so check each one against the code and fix only the real ones:\n' +
+    gaps.map((gap, i) => `${i + 1}. ${gap}`).join('\n')
+  )
 }
 
 /** The sidebar shows this many of a project's newest turns and commits until "Show more". */
@@ -1223,6 +1248,18 @@ class RearviewPlugin extends Plugin {
     return this.steering.state === 'done'
   }
 
+  /** Puts a message in the Steer box on the right and focuses it, so the person checks or finishes it, then sends or copies it. */
+  async draftSteer(text) {
+    this.draft = text
+    await this.ensureLeaf(SIDE_VIEW, () => this.app.workspace.getRightLeaf(false))
+    this.refresh([SIDE_VIEW])
+    const box = document.getElementById('rv-steer-text')
+    if (box) {
+      box.focus()
+      box.setSelectionRange(box.value.length, box.value.length)
+    }
+  }
+
   /** Copies a correction, with the request and files it is about, to paste into Claude Code yourself. */
   async copySteer(turn, text) {
     const message = text.trim()
@@ -1489,7 +1526,7 @@ class TurnView extends ItemView {
     if (turn.isSteer) chip(cardHead, 'steer from Rearview', 'blue')
     const s = score(turn)
     chip(cardHead, s.label, s.tone)
-    card.createEl('p', { cls: 'rv-request', text: turn.request })
+    card.createEl('p', { cls: 'rv-request', text: requestText(turn.request) || '(no request text)' })
     if (result) {
       const chips = card.createDiv({ cls: 'rv-chips' })
       for (const r of result.requirements) chip(chips, `${r.id} ${r.text} · ${r.status}`, STATUS_TONES[r.status] || 'muted')
@@ -1746,7 +1783,10 @@ function reviewAction(parent, project, turn, plugin) {
     return
   }
   if (review.state === 'failed') row.createEl('span', { cls: 'rv-review-error', text: review.reason })
-  else row.createEl('span', { cls: 'rv-muted', text: turn.files.length ? 'Not reviewed yet.' : review.reason || 'Nothing was changed in this turn.' })
+  else {
+    const message = turn.isGit ? review.reason : turn.files.length ? 'Not reviewed yet.' : 'Nothing was changed in this turn, so there is nothing to review.'
+    row.createEl('span', { cls: 'rv-muted', text: message })
+  }
   if (turn.isGit || !turn.files.length) return
   const button = row.createEl('button', { text: review.state === 'failed' ? 'Try again' : `Review with ${plugin.modelLabel()}` })
   button.addEventListener('click', () => plugin.startReview(project.root, turn.id))
@@ -1769,6 +1809,11 @@ function renderCheck(el, turn, review, result, project, plugin) {
   for (const v of result.violations) {
     el.createDiv({ cls: 'rv-callout rv-red', text: `Goes against your principle "${v.principleId}": ${v.finding}` })
   }
+  const gaps = gapsMessage(result)
+  if (gaps) {
+    const send = el.createEl('button', { cls: 'mod-cta rv-gaps-button', text: 'Send the gaps to Claude…' })
+    send.addEventListener('click', () => plugin.draftSteer(gaps))
+  }
 }
 
 function renderReasoning(el, turn, review, result, project, plugin) {
@@ -1786,6 +1831,8 @@ function renderReasoning(el, turn, review, result, project, plugin) {
     chip(head, source.label, source.tone)
     if (step.why) card.createEl('p', { text: step.why })
     renderEvidence(card, step.evidence, project, plugin)
+    const steer = card.createEl('button', { cls: 'rv-link', text: 'Steer this step ›' })
+    steer.addEventListener('click', () => plugin.draftSteer(`About your step "${step.title}": `))
   }
 }
 
@@ -1821,7 +1868,23 @@ class SideView extends ItemView {
     const { project, turn, label } = shown
     if (turn.files === null) return
 
-    sectionTitle(el, `${label} · files`)
+    const review = turn.review || {}
+    if (review.state === 'done' && review.result.requirements.length) {
+      const reqs = review.result.requirements
+      sectionTitle(el, `Your request · ${reqs.filter(r => r.status === 'done').length} of ${reqs.length} done`)
+      const parts = el.createDiv({ cls: 'rv-list' })
+      for (const r of reqs) {
+        const line = parts.createDiv({ cls: 'rv-part' })
+        line.createEl('span', { cls: 'rv-id', text: r.id })
+        line.createEl('span', { cls: 'rv-grow', text: r.text })
+        chip(line, r.status, STATUS_TONES[r.status] || 'muted')
+      }
+    }
+
+    const filesTitle = sectionTitle(el, `${label} · files`)
+    if (turn.files.length) {
+      counts(filesTitle, turn.files.reduce((n, f) => n + f.added, 0), turn.files.reduce((n, f) => n + f.removed, 0))
+    }
     const files = el.createDiv({ cls: 'rv-list' })
     if (turn.files.length === 0) files.createDiv({ cls: 'rv-muted', text: 'No files changed.' })
     for (const file of turn.files) {
@@ -2030,4 +2093,4 @@ class RearviewSettingTab extends PluginSettingTab {
 }
 
 module.exports = RearviewPlugin
-module.exports.testing = { REVIEW_SYSTEM, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
+module.exports.testing = { REVIEW_SYSTEM, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }

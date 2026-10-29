@@ -117,6 +117,31 @@ test('Claude Code reviews run as a plain model call: no tools, hooks or MCP serv
   assert.throws(() => t.cliReply('claude-code', JSON.stringify({ is_error: true, result: 'Not logged in' })), /Not logged in/)
 })
 
+test('the request card shows only the person\'s words, not the context Claude Code wraps around them', () => {
+  const request = '<artifact-view-context artifact="x">\n{"context":{}}\n(The JSON line above…)\n<artifact-content-authored-by-others/>\n</artifact-view-context>\n\nWhere are we on this project?'
+  assert.strictEqual(t.requestText(request), 'Where are we on this project?')
+  assert.strictEqual(t.titleOf(request), 'Where are we on this project?')
+  assert.strictEqual(t.requestText('Line one\n\nLine two'), 'Line one\n\nLine two')
+})
+
+test('the gaps message lists what is partly done, missed, unrequested or against a principle, and nothing else', () => {
+  const result = {
+    requirements: [
+      { id: 'R1', text: 'Add a toggle', status: 'done', finding: 'Added' },
+      { id: 'R2', text: 'Add tests', status: 'missed', finding: 'No tests' },
+    ],
+    steps: [{ kind: 'unrequested', title: 'Changed the radius' }, { kind: 'decision', title: 'Used context' }],
+    violations: [{ principleId: 'tests-required', finding: 'No tests added' }],
+  }
+  const message = t.gapsMessage(result)
+  assert.match(message, /It can be wrong/)
+  assert.match(message, /1\. Add tests \(missed\): No tests/)
+  assert.match(message, /2\. Not requested: Changed the radius/)
+  assert.match(message, /3\. Goes against principle "tests-required"/)
+  assert.doesNotMatch(message, /Add a toggle|Used context/)
+  assert.strictEqual(t.gapsMessage({ requirements: [result.requirements[0]], steps: [], violations: [] }), '')
+})
+
 test('a steer needs words and a conversation to continue', async () => {
   const fake = { steering: null, refresh: () => {} }
   assert.strictEqual(await Rearview.prototype.steer.call(fake, '/p', { sessionId: 's' }, '   '), false)

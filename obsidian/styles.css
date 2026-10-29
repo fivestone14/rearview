@@ -180,6 +180,9 @@
 /* Right sidebar */
 .rv-side { padding: 0 12px 16px !important; }
 .rv .rv-list { display: flex; flex-direction: column; gap: 2px; }
+.rv .rv-part { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: var(--font-ui-small); }
+.rv .rv-h .rv-counts { margin-left: 8px; text-transform: none; letter-spacing: 0; }
+.rv .rv-gaps-button { margin-top: 12px; }
 .rv .rv-affected { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; margin-top: 8px; padding: 8px 8px 0; border-top: 1px solid var(--background-modifier-border); }
 .rv .rv-trace { display: flex; flex-direction: column; gap: 8px; }
 .rv .rv-hit {
