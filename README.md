@@ -1,127 +1,92 @@
 # Rearview
 
-A Claude Code plugin that reviews every turn Claude takes, for people who write code and people who don't.
+An Obsidian plugin for reviewing what an AI coding agent changed, built to be easier to follow than reading changes in an IDE.
 
-After each turn, a pane beside the chat answers three questions:
+While Claude Code works on your project, Rearview shows what changed since your last commit, file by file in the order the files build on each other, with what you asked for, how the files connect, and what each change does to the app. A review by the model of your choice adds what Claude did in each file and why, whether your request was fully done, and Claude's reasoning rebuilt from its work. Guardrails and a message box let you guide Claude from the same view. Everything sits in one Obsidian window, next to your notes.
 
-1. **Did it do what I asked?** Your request split into parts, each marked *done*, *partly* or *missed*, with the file and line that shows it.
-2. **What changed, and why?** Each changed file's diff, with a plain-English reason under the lines that matter. Each reason says where it comes from: *Claude said so*, *inferred* from the code, or *no reason found*. Click **Trace** on a name to see where it is defined and used, without opening other files.
-3. **How should it work next time?** Claude's reasoning rebuilt as steps, with problems (shortcuts, unrequested changes, skipped work) first. Mark a step **Looks right** or **Steer** Claude with a correction. Steer the same way twice and Rearview suggests saving it as a **principle**, which Claude then follows in later sessions.
+## What to expect
+
+- **Your changes, not a history.** Each project in the left sidebar shows its uncommitted changes and last commits, refreshed every few seconds. Rearview matches them to the Claude Code requests that made them (in the desktop app, the terminal or VS Code), through Claude's edits and the shell commands it ran, so there is nothing to import.
+- **By request.** The main tab opens on the conversation, newest request first. *At a glance* gives the counts and a fit meter. Changes Claude made on its own come first, under *Not from anything you asked*. Each request shows what it meant and the changes it led to, with anything that *goes further* than you asked on top and the matching changes folded into one line. Open a change for its Changed / Why, *Ask Claude about this*, or *See the code ›*. Tick each change as you review it; a request folds itself once everything in it is ticked.
+- **By file.** The same changes as a table of files, in the order they build on each other, with each file's status and fit. Open a file for *What Claude did*, then each change with its Changed / Why / Fits? lines and its code right underneath, so you can check the code while reading the why.
+- **How the files connect.** The right sidebar lists every file around the change in flow order, with lines from the chosen file to what it uses and what uses it. *Impact* says what each change does to the app, which files the change reaches without editing them, and where each part of your request stands.
+- **Reviews with any model.** Uncommitted changes are reviewed by themselves once Claude stops for a little while, or with **Review**. Use a tool you are already signed in to (Claude Code, OpenAI Codex, Gemini CLI), a hosted API with your key (Anthropic, OpenAI, Google Gemini, OpenRouter, or any OpenAI-compatible address), or a model on your own computer (Ollama, LM Studio).
+- **Trace.** Type a name in the right sidebar's *Trace* tab to see where it is defined and used, without leaving the review.
+- **Guide Claude.** The bar under the changes holds your guardrails (standing instructions you switch on or off) and a message box. **Send to Claude** continues the conversation behind the changes in the background, with the guardrails that are on; **Copy** puts the message on your clipboard to paste into Claude Code.
+
+Rearview reads what Claude Code already saves, so it never sees Claude's private reasoning. Reasons and steps are rebuilt from what Claude said, read and changed, and each one says where it came from.
+
+## Requirements
+
+- **Obsidian** for desktop (macOS, Windows or Linux). The mobile apps are not supported.
+- **Claude Code**, a recent version. Rearview reads the session transcripts it saves in `~/.claude/projects/`.
+- **Git**, with your project in a Git repository.
 
 ## Install
 
-Rearview is a *mod*: a plugin of function hooks. It needs Claude Code **2.1.287 or newer** (Desktop 2.1.286+, VS Code extension 2.1.299+). Mods are an early-access part of Claude Code and their API may change between releases.
+1. **Install Obsidian.** Download it from [obsidian.md](https://obsidian.md), open it, and create a vault (any folder works) or open one you have.
+2. **Get Rearview.** Download this repository as a ZIP from GitHub and unzip it, or clone it:
 
-From a folder on your computer (a clone of this repository):
+   ```bash
+   git clone https://github.com/fivestone14/rearview.git
+   ```
 
-```bash
-claude plugin marketplace add /path/to/rearview
-```
+3. **Copy the plugin into your vault.** Make a folder `.obsidian/plugins/rearview/` inside your vault and copy the three files from the repository's `obsidian/` folder into it: `main.js`, `manifest.json` and `styles.css`. For example, on macOS or Linux, from inside the repository:
 
-```bash
-claude plugin install rearview@rearview
-```
+   ```bash
+   mkdir -p "/path/to/your/vault/.obsidian/plugins/rearview" && cp obsidian/main.js obsidian/manifest.json obsidian/styles.css "/path/to/your/vault/.obsidian/plugins/rearview/"
+   ```
 
-In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add marketplace**, and enter the folder path. Then **Add plugin** and pick Rearview.
+   The `.obsidian` folder is hidden; in Finder press Cmd+Shift+. to show it.
+4. **Turn it on.** In Obsidian open **Settings › Community plugins**, turn off **Restricted mode** if it is on, then switch on **Rearview** in the list of installed plugins.
 
-Because the marketplace is a folder, Claude Code reads the plugin straight from it. After editing the code, run `/reload-plugins` in a session.
+To update Rearview later, copy the three files again and restart Obsidian.
 
-## Using it on a project
+## Use it during a review
 
-There is no import step. Rearview reviews whichever folder the Claude Code session is working in: start a session in your project (in the desktop app, pick the project folder when you start the session) and work as usual.
+1. **Open Rearview.** Click the eye icon in the left ribbon, or run **Rearview: Open Rearview** from the command palette (Cmd/Ctrl+P).
+2. **Add your project.** Click **+** beside *Projects* and choose the project folder. Rearview checks the connection step by step: the folder, Git, the repository, the branch and last commit, the GitHub remote and whether it answers, and how far the branch is ahead or behind. A folder that is not in a Git repository is refused with the fix to make.
+3. **Work in Claude Code as usual.** The project's uncommitted changes show in the main tab as Claude edits files. Rearview comes forward by itself when you send Claude a request (switch this off in its settings).
+4. **Review the changes.**
+   - Read the main tab top to bottom: your request, then each file in build order. Open a request to see what it led to; *See the code ›* on any change opens it in the by-file view with its code.
+   - In the right sidebar, click any file to see what it uses and what uses it, or open **Impact** to see what the changes do to the app.
+   - Use **Trace** on any name you want to follow.
+5. **Guide Claude.** Click **Guide Claude ›** on a flag to draft a message, or write your own in the bar under the changes, and switch on the guardrails you want. **Send to Claude** continues the conversation in the background (`claude -p --resume`): Claude can edit files, and shell commands it asks for are refused, since nobody is there to approve them. Its edits show up as the changes move. Or press **Copy** and paste the message into Claude Code yourself.
+6. **Look back.** Click any of the project's last commits in the left sidebar to see it the same way.
 
-- The pane opens by itself when the desktop app or VS Code attaches to the session. Anywhere else, or if it is closed, type `/rearview`.
-- Each turn appears once Claude finishes. The review takes a few seconds more and shows **Reviewing this turn…** until it is ready.
-- **Send the gaps to Claude** on the Check tab sends one follow-up listing everything partly done, missed, unrequested or against a principle.
+## Choose the review model
 
-## How it works
+Open **Settings › Rearview › Review model** and pick how reviews run. The setting says where your code goes for each choice.
 
-Everything is one hooks module, [`hooks/register.tsx`](hooks/register.tsx), which connects Claude Code's events to small files that each do one job:
+- **Claude Code (the default).** Nothing to set up: reviews run on the Claude Code login you already use. Leave *Model* blank for your default, or type `sonnet`, `opus` or `haiku`.
+- **OpenAI Codex or Gemini CLI.** Install the tool and sign in to it, then pick it. The *Status* line says whether Rearview found it.
+- **An API with your key** (Anthropic, OpenAI, Google Gemini, OpenRouter). Pick it, click the *API key* box to add your key, then **Load models** and pick one. Keys are kept in Obsidian's secret storage (Obsidian 1.11.4 or newer), not in Rearview's settings file.
+- **A model on your computer** (free and private). Install [Ollama](https://ollama.com), run `ollama pull qwen2.5-coder` (or any model), pick **Ollama (on this computer)**, then **Load models**. LM Studio works the same way.
+- **Anything else** that speaks the OpenAI API: pick **Custom**, enter its address, a key if it needs one, and the model.
 
-| Event | What Rearview does | File |
-|---|---|---|
-| `session.start` | Loads saved turns and principles, adds `/rearview`, starts the reviewer timer | `register.tsx` |
-| `session.attach` | Opens the pane when a desktop or VS Code window attaches | `register.tsx` |
-| `prompt.submit` | **Drift check**: if a prompt you typed goes against an active principle, holds it and asks above the prompt (*Just this once* / *Retire the principle* / *Cancel*) | `principles.ts` |
-| `turn.start` | Starts recording a turn | `turn.ts` |
-| `tool.call` | Refuses edits a *blocking* principle forbids; remembers files Claude reads, and each file's content before Claude's first edit | `turn.ts`, `principles.ts` |
-| `turn.complete` | Diffs each edited file, finds files changed by shell commands (against a git snapshot taken when the turn started), finds files that import a changed file | `turn.ts`, `diff.ts`, `trace.ts` |
-| timer (every 2 s) | Reviews the next finished turn with one model call: checklist, why-notes, reasoning steps, principle violations | `review.ts` |
-| `prompt.compose` | Adds active principles to Claude's system prompt | `principles.ts` |
-| `ui.render` | Draws the pane and the drift question | `pane.tsx` |
+Click **Test** to check the connection. Small local models sometimes answer in a shape Rearview cannot read; the review then says so and offers **Try again**, and a larger model usually fixes it.
 
-The other files:
+## Privacy and security
 
-| File | Job |
-|---|---|
-| `hooks/state.ts` | The only file that reads or writes session state; writing redraws the pane |
-| `hooks/actions.ts` | What each button in the pane does |
-| `hooks/paths.ts` | Project-relative paths, file reads and writes, running git in the project |
-| `types/index.d.ts` | Every data shape Rearview keeps, and its session state contract |
-| `tests/rearview.test.tsx` | Tests for the logic and for a full turn through the engine |
-
-### What it stores
-
-| Where | What |
-|---|---|
-| `.claude/rearview/principles.md` in your project | Your principles. Plain Markdown: read it, edit it, commit it to share with your team. |
-| `.claude/rearview/signals.jsonl` in your project | Every *Looks right* and *Steer*, the evidence principles are suggested from |
-| Claude Code's plugin store | The last 20 turns per project, with their reviews |
-
-A principle looks like this:
-
-```markdown
-## tests-required
-- rule: New behavior ships with tests.
-- scope: everywhere
-- enforce: block
-- files: package.json
-- status: active
-- signals: 2
-```
-
-`enforce` decides how strongly it applies: **guide** (Claude reads it), **warn** (the review also checks changes against it), **block** (also refuses edits to files matching `files`).
-
-### Privacy
-
-Rearview uses no third-party services and makes no network calls of its own. The review, drift check and principle suggestions are model calls made through your Claude Code session's own connection, so your request, the diffs and Claude's replies for each turn are sent to Anthropic the same way your conversation is. Choose the models under the plugin's settings (`reviewModel`, default `sonnet`; `checkModel`, default `haiku`).
-
-The last 20 turns, with their diffs, are kept on your computer in Claude Code's plugin store so the pane can show them in later sessions. A secret typed into an ordinary source file is part of its diff like any other line.
-
-### Security
-
-What Rearview can do is limited to what `claude plugin validate .` lists: read project files, write its two files under `.claude/rearview/`, run `git` and `grep`, call the model, and send a prompt to Claude when you press a button. It opens no ports, loads no code from elsewhere and has no dependencies.
-
-It is built for opening projects you did not write:
-
-- **A principles file that comes with a project is never used until you approve it.** Rearview remembers a fingerprint of the file each time it writes it or you approve it. A file that arrives in a cloned repository, or changes outside Rearview, is shown in the Principles tab with a warning, but Claude does not see it, it blocks nothing, and it holds no prompts until you read it and press **Approve these principles**.
-- **Nothing the review says reaches Claude without you seeing it first.** Project files can contain text written to mislead the review model, so **Send the gaps to Claude** shows the exact message and waits for **Send to Claude**, and the message itself tells Claude the review can be wrong.
-- **Secret-looking files are never read.** `.env` files, private keys, credential and secrets files, Terraform state and similar names are listed by name only; their contents are not shown, stored or sent.
-- **No command can be smuggled in.** `git` and `grep` run with argument lists, not a shell, with every file name after `--`; names the review model asks to trace must be plain identifiers.
-- **A failing check never locks you out.** If the drift check or the edit guard itself fails, your prompt or tool call goes through.
-
-Installing a plugin runs its code in every session, so read the code first; it is about 1,700 lines of TypeScript in `hooks/`.
+- **You choose where reviews go.** Rearview reads Claude Code's transcripts and your project's files, and runs `git` in the project. A review sends the changes (your requests, Claude's messages, the diffs and your guardrails) to the review model you chose: through your Claude Code, Codex or Gemini CLI login, to the API you added a key for, or to a model on your own computer, where nothing leaves it. Apart from reviews, its only network use is the connection check, which asks your Git remote for its branches.
+- **Reviews run isolated.** A CLI review runs in an empty folder as a plain model call: Claude Code gets no tools, hooks or MCP servers, and saves no session.
+- **Secret-looking files are never shown.** `.env` files, private keys, credential and secrets files, Terraform state and similar names appear by name only, in changes, Trace and the connections.
+- **No command can be smuggled in.** `git` runs with an argument list, never through a shell, and Trace only searches plain names.
+- **A message is sent only by you.** Rearview continues a conversation only when you press **Send to Claude**, and the background run can edit files but not run shell commands.
 
 ## Limits
 
-- **Edits through Claude's file tools are diffed exactly.** Files changed by shell commands are found only in a git repository with at least one commit: Rearview snapshots the working tree when the turn starts (`git stash create`, which leaves your files and branches untouched and only adds an unreferenced object to `.git`) and diffs against it when the turn ends. At most 50 such files are shown per turn; binary and very large new files are listed without a diff. Outside git, before the first commit, or mid-merge, only Claude's own file edits are seen.
-- **Blocking covers Claude's file tools only.** A blocking principle refuses Edit, Write and NotebookEdit calls on matching files; it cannot stop a shell command from changing them.
-- **The drift check only holds prompts you typed.** Prompts with attachments or `@file` mentions skip it, because a held prompt is resent as plain text.
-- **Reasons are rebuilt, not read from Claude's mind.** Claude Code does not expose the model's private reasoning, so steps come from what Claude said, which files it read, and what it changed. That is why every reason is labelled.
-- **Trace and imports are text search** (`git grep`, or `grep` outside git). Imports are understood for relative JavaScript/TypeScript and Python imports (including `from . import x`).
-- **The Files tab shows the changed area**, not a whole-project graph: changed, affected and read files, and the uses and used-by lists of the file you select.
+- **Edits made with shell commands** leave no diff in Claude Code's transcripts. Rearview credits a file to Claude when one of its commands clearly writes to it (a redirect, `sed -i`, a script that writes files, a copy onto it); a command that only reads a file does not count, so an unusual write can go unnoticed.
+- **The newest sessions are read.** Rearview matches changes against a project's twelve most recent Claude Code sessions.
+- **Connections and Trace are text search.** Imports are understood for relative JavaScript/TypeScript and Python imports; Trace uses `git grep`.
 
 ## Development
 
-```bash
-claude plugin validate .
-```
+The plugin is plain JavaScript in `obsidian/`, with no build step and no dependencies. Run its tests with:
 
 ```bash
-claude plugin test .
+node obsidian/test.js
 ```
-
-`validate` checks the manifest and that the hooks module uses the API as the engine allows. `test` runs `tests/rearview.test.tsx` against the engine itself, with no files, git or network.
 
 ## License
 

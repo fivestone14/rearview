@@ -1,0 +1,9 @@
+{
+  "id": "rearview",
+  "name": "Rearview",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Shows Rearview's review of each Claude Code turn: did it do what you asked, what changed and why, and steer the next turn.",
+  "author": "fivestone14",
+  "isDesktopOnly": true
+}
