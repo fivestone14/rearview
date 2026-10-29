@@ -212,7 +212,7 @@ test('the review is asked about files in story order, told which ones have no Cl
     links: [{ from: 'b.ts', to: 'a.ts', how: 'reads the theme' }, { from: 'x' }],
     violations: [{ guardrail: 'Add tests', finding: 'None added', evidence: [{ file: 'a.ts' }] }],
   }))
-  assert.deepStrictEqual(review.files, [{ file: 'a.ts', did: 'Added it', effect: 'Theme is shared', next: 'b.ts uses it', changes: [] }])
+  assert.deepStrictEqual(review.files, [{ file: 'a.ts', did: 'Added it', why: '', effect: 'Theme is shared', next: 'b.ts uses it', changes: [] }])
   assert.deepStrictEqual(review.links, [{ from: 'b.ts', to: 'a.ts', how: 'reads the theme' }])
   assert.strictEqual(review.violations[0].guardrail, 'Add tests')
   // A review saved before these fields existed still draws, with each list empty.
@@ -304,6 +304,19 @@ test('one file can be reviewed alone, and its card draws on whichever review fin
   assert.deepStrictEqual(plugin.reviewQueue, [{ root: '/p', id: 'wt:/p', file: 'src/a.ts' }], 'queued once')
   assert.strictEqual(plugin.reviews['wt:/p#src/a.ts'].state, 'pending')
   assert.strictEqual(plugin.reviews['wt:/p'], undefined, 'the whole change keeps its own review')
+})
+
+test('after a review each change says what and why, and every flag is gathered under Still to do with its file', () => {
+  const review = t.parseReview(JSON.stringify({ files: [{ file: 'a.ts', did: 'Did it.', why: 'Because.', changes: [{ title: 'One', from: 1, what: 'Does one.', why: 'Needed for two.' }] }] }))
+  assert.strictEqual(review.files[0].why, 'Because.')
+  assert.strictEqual(review.files[0].changes[0].why, 'Needed for two.')
+  const result = {
+    requirements: [{ id: 'R1', text: 'Tests', status: 'missed', finding: 'None', evidence: [] }, { id: 'R2', text: 'Toggle', status: 'partly', finding: 'Half', evidence: [{ file: 'a.ts', line: 3 }] }],
+    steps: [], violations: [{ guardrail: 'Reuse helpers', finding: 'New helper', evidence: [] }],
+  }
+  const fromCards = t.flagsFor('a.ts', result).map(f => ({ ...f, file: 'a.ts' }))
+  const todo = t.stillToDo(fromCards, result, new Set(['a.ts']))
+  assert.deepStrictEqual(todo.map(f => [f.kind, f.file]), [['partly', 'a.ts'], ['missed', ''], ['guardrail', '']])
 })
 
 // ---------- Git ----------

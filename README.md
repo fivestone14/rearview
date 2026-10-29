@@ -7,12 +7,12 @@ While Claude Code works on your project, Rearview shows what changed since your 
 ## What to expect
 
 - **Your changes, not a history.** Each project in the left sidebar shows its uncommitted changes and last commits, refreshed every few seconds. Rearview matches them to the Claude Code requests that made them (in the desktop app, the terminal or VS Code), so there is nothing to import, and files with no Claude edit on record are marked *no Claude edit recorded*.
-- **One story, top to bottom.** The main tab starts with what you asked, then shows each changed file as a numbered card, in the order they build on each other: what Claude did there, what it connects to, anything flagged, then the diff. A *Then ↓* line links each card to the next.
-- **Why notes.** Under a line that needs explaining, a *Why* note says why it changed and where that reason comes from: *Claude said so*, *inferred* from the code, or *no reason found*.
-- **Flags.** Parts of your request that are partly done or missed, shortcuts, changes nobody asked for, and anything against a guardrail sit on the file they are about, each with **Guide Claude ›**.
+- **One story, top to bottom.** The main tab starts with what you asked, then shows each changed file as a numbered card, in the order they build on each other. A *Then ↓* line links each card to the next.
+- **What Claude did, and why.** Each card leads with what Claude did in that file, in plain words. A file with two or more real changes lists each one, numbered, with what it does and why; its code stays closed until you open it, and each change is marked by its number in the code.
+- **Still to do.** Parts of your request that are partly done or missed, shortcuts, changes nobody asked for, and anything against a guardrail are gathered under the cards, each naming its file, with **Guide Claude ›**.
 - **How the files connect.** The right sidebar lists every file around the change in flow order, with lines from the chosen file to what it uses and what uses it. *Impact* says what each change does to the app, which files the change reaches without editing them, and where each part of your request stands.
 - **Reviews with any model.** Uncommitted changes are reviewed by themselves once Claude stops for a little while, or with **Review**. Use a tool you are already signed in to (Claude Code, OpenAI Codex, Gemini CLI), a hosted API with your key (Anthropic, OpenAI, Google Gemini, OpenRouter, or any OpenAI-compatible address), or a model on your own computer (Ollama, LM Studio).
-- **Trace.** Click **Trace** beside a Why note to see where a name is defined and used, without leaving the review.
+- **Trace.** Type a name in the right sidebar's *Trace* tab to see where it is defined and used, without leaving the review.
 - **Guide Claude.** The bar under the changes holds your guardrails (standing instructions you switch on or off) and a message box. **Send to Claude** continues the conversation behind the changes in the background, with the guardrails that are on; **Copy** puts the message on your clipboard to paste into Claude Code.
 
 Rearview reads what Claude Code already saves, so it never sees Claude's private reasoning. Reasons and steps are rebuilt from what Claude said, read and changed, and each one says where it came from.
@@ -49,7 +49,7 @@ To update Rearview later, copy the three files again and restart Obsidian.
 2. **Add your project.** Click **+** beside *Projects* and choose the project folder. Rearview checks the connection step by step: the folder, Git, the repository, the branch and last commit, the GitHub remote and whether it answers, and how far the branch is ahead or behind. A folder that is not in a Git repository is refused with the fix to make.
 3. **Work in Claude Code as usual.** The project's uncommitted changes show in the main tab as Claude edits files. Rearview comes forward by itself when you send Claude a request (switch this off in its settings).
 4. **Review the changes.**
-   - Read the main tab top to bottom: your request, then each file in build order. The Why notes explain the lines that need it, and flags show what needs your eyes.
+   - Read the main tab top to bottom: your request, then each file in build order. Each card says what Claude did and why, and *Still to do* shows what needs your eyes.
    - In the right sidebar, click any file to see what it uses and what uses it, or open **Impact** to see what the changes do to the app.
    - Use **Trace** on any name you want to follow.
 5. **Guide Claude.** Click **Guide Claude ›** on a flag to draft a message, or write your own in the bar under the changes, and switch on the guardrails you want. **Send to Claude** continues the conversation in the background (`claude -p --resume`): Claude can edit files, and shell commands it asks for are refused, since nobody is there to approve them. Its edits show up as the changes move. Or press **Copy** and paste the message into Claude Code yourself.
