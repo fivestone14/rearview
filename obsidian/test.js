@@ -212,7 +212,7 @@ test('the review is asked about files in story order, told which ones have no Cl
     links: [{ from: 'b.ts', to: 'a.ts', how: 'reads the theme' }, { from: 'x' }],
     violations: [{ guardrail: 'Add tests', finding: 'None added', evidence: [{ file: 'a.ts' }] }],
   }))
-  assert.deepStrictEqual(review.files, [{ file: 'a.ts', did: 'Added it', effect: 'Theme is shared', next: 'b.ts uses it' }])
+  assert.deepStrictEqual(review.files, [{ file: 'a.ts', did: 'Added it', effect: 'Theme is shared', next: 'b.ts uses it', changes: [] }])
   assert.deepStrictEqual(review.links, [{ from: 'b.ts', to: 'a.ts', how: 'reads the theme' }])
   assert.strictEqual(review.violations[0].guardrail, 'Add tests')
   // A review saved before these fields existed still draws, with each list empty.
@@ -269,6 +269,23 @@ test('changes are reviewed by themselves only once the files and Claude have bot
   assert.strictEqual(run({ changedAt: quiet, workedAt: quiet, review: { state: 'done', signature } }), 0, 'already reviewed')
   assert.strictEqual(run({ changedAt: quiet, workedAt: quiet, review: { state: 'failed', signature } }), 0, 'a failed review is not retried by itself')
   assert.strictEqual(run({ changedAt: quiet, workedAt: quiet, review: { state: 'done', signature: 'older' } }), 1, 'the files moved on')
+})
+
+test('a file gets a numbered breakdown only with two or more real changes, and its links only to files really connected', () => {
+  const review = t.parseReview(JSON.stringify({ files: [{ file: 'src/ctx.ts', did: 'Holds the theme.', changes: [
+    { title: 'Lets any screen ask for the theme', from: 20, to: 22, what: 'A shortcut.', used: [{ file: 'Panel.tsx', line: 6, how: 'the switch' }, { file: 'Made/Up.ts', how: 'guess' }] },
+    { title: 'Checks the system setting', from: 4, what: 'Once at start.' },
+    { title: 'No line', what: 'dropped' },
+  ] }] }))
+  const info = review.files[0]
+  assert.deepStrictEqual(info.changes.map(c => [c.title, c.from, c.to]), [['Checks the system setting', 4, 4], ['Lets any screen ask for the theme', 20, 22]])
+  const map = { nodes: [], edges: [{ from: 'src/Panel.tsx', to: 'src/ctx.ts' }] }
+  const changes = t.breakdownOf(info, 'src/ctx.ts', map, ['src/ctx.ts'])
+  assert.deepStrictEqual(changes[1].used, [{ file: 'src/Panel.tsx', line: 6, how: 'the switch' }])
+  assert.strictEqual(t.changeAt(changes, 21), 1)
+  assert.strictEqual(t.changeAt(changes, 10), -1)
+  assert.deepStrictEqual(t.breakdownOf({ changes: [changes[0]] }, 'src/ctx.ts', map, []), [], 'one change: the lead line says it all')
+  assert.deepStrictEqual(t.breakdownOf({ did: 'old review' }, 'src/ctx.ts', map, []), [], 'reviews saved before breakdowns still draw')
 })
 
 // ---------- Git ----------

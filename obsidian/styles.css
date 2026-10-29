@@ -321,8 +321,6 @@
 .rv .rv-step-no { flex: none; display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 999px; background: rgba(var(--interactive-accent-rgb), 0.2); color: var(--text-accent); font-size: 12px; font-weight: 700; }
 .rv .rv-file-hd .rv-chevron.is-open { transform: rotate(90deg); }
 .rv .rv-band { background: rgba(var(--interactive-accent-rgb), 0.06); }
-.rv .rv-band-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-accent); }
-.rv .rv-did { margin: 0; font-size: var(--font-ui-medium); line-height: 1.55; color: var(--text-normal); }
 .rv .rv-connects { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .rv .rv-connect { gap: 4px; height: auto; padding: 3px 9px; border: 1px solid var(--background-modifier-border); border-radius: 7px; background: var(--background-primary); box-shadow: none; font-size: 12px; font-weight: normal; cursor: pointer; }
 .rv .rv-connect:hover { border-color: var(--interactive-accent); }
@@ -397,3 +395,40 @@
 .rv .rv-hit-how { font-size: 12px; white-space: normal; }
 .rv .rv-impact-intro { margin: 0 0 12px; }
 .rv .rv-impact-top { display: flex; align-items: center; gap: 8px; width: 100%; }
+
+/* File card: "What Claude did" leads, then each real change, matched by number and colour to its code */
+.rv .rv-hero { display: flex; flex-direction: column; gap: 12px; padding: 18px 20px 16px; border-bottom: 1px solid var(--background-modifier-border); }
+.rv .rv-hero-label { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-accent); }
+.rv .rv-hero-icon { display: flex; }
+.rv .rv-hero-icon svg { width: 14px; height: 14px; }
+.rv .rv-did { margin: -4px 0 0; max-width: 62em; padding: 2px 0 2px 14px; border-left: 3px solid var(--interactive-accent); font-size: 18px; font-weight: 500; line-height: 1.5; color: var(--text-normal); }
+.rv .rv-breakdown { display: flex; flex-direction: column; gap: 4px; }
+.rv .rv-breakdown-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding-bottom: 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.rv .rv-breakdown-hint { font-size: 12px; font-weight: normal; letter-spacing: 0; text-transform: none; color: var(--text-faint); }
+.rv .rv-change-row { display: flex; align-items: flex-start; justify-content: flex-start; gap: 12px; width: 100%; height: auto; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; box-shadow: none; text-align: left; font-weight: normal; cursor: pointer; }
+.rv .rv-change-row:hover { background: var(--background-modifier-hover); }
+.rv .rv-change-row.is-active { border-color: var(--background-modifier-border-hover); background: var(--background-modifier-hover); }
+.rv .rv-change-words { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; white-space: normal; }
+.rv .rv-change-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; }
+.rv .rv-change-title { font-size: var(--font-ui-medium); font-weight: 600; color: var(--text-normal); }
+.rv .rv-change-lines { font-size: 11.5px; color: var(--text-muted); }
+.rv .rv-change-what { font-size: var(--font-ui-small); color: var(--text-muted); }
+.rv .rv-kdot { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 999px; background: var(--rv-k); color: var(--background-primary); font-size: 12px; font-weight: 700; align-self: flex-start; }
+.rv .rv-k0 { --rv-k: var(--color-orange); }
+.rv .rv-k1 { --rv-k: var(--color-purple); }
+.rv .rv-k2 { --rv-k: var(--color-green); }
+.rv .rv-k3 { --rv-k: var(--color-blue); }
+.rv .rv-k4 { --rv-k: var(--color-cyan); }
+.rv .rv-k5 { --rv-k: var(--color-pink); }
+.rv .rv-band-sub { background: transparent; }
+.rv .rv-code-bar { display: flex; align-items: center; gap: 12px; padding: 6px 16px; border-bottom: 1px solid var(--background-modifier-border); background: var(--background-secondary); }
+.rv .rv-code-toggle { display: flex; align-items: center; gap: 6px; height: auto; padding: 4px 0; border: 0; background: transparent; box-shadow: none; font-size: 12.5px; font-weight: 600; color: var(--text-muted); cursor: pointer; }
+.rv .rv-code-toggle:hover { color: var(--text-normal); }
+.rv .rv-code-toggle .rv-chevron.is-open { transform: rotate(90deg); }
+.rv .rv-change-head { display: flex; flex-direction: column; gap: 6px; padding: 9px 16px 9px 18px; border-top: 1px solid var(--background-modifier-border); background: var(--background-secondary); box-shadow: inset 4px 0 0 var(--rv-k); font-family: var(--font-interface); font-size: var(--font-ui-small); white-space: normal; }
+.rv .rv-change-head.is-active { background: rgba(var(--interactive-accent-rgb), 0.12); }
+.rv .rv-change-head .rv-change-what { flex: 1 1 280px; }
+.rv .rv-change-used { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-left: 30px; }
+.rv .rv-change-head .rv-flag { margin-left: 30px; }
+.rv .rv-ln.rv-in-change { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--rv-k) 60%, transparent); }
+.rv .rv-ln.rv-in-change.is-active { box-shadow: inset 3px 0 0 var(--rv-k); }

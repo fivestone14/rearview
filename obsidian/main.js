@@ -532,7 +532,7 @@ const REVIEW_SYSTEM = `You review the changes an AI coding agent made to a proje
 Reply with one JSON object only, no prose, in exactly this shape:
 {
   "requirements": [{ "text": "short restatement", "quote": "the person's own words", "status": "done|partly|missed", "finding": "one plain sentence", "evidence": [{ "file": "path", "line": 12 }] }],
-  "files": [{ "file": "path", "did": "one plain sentence: what the agent did in this file", "effect": "one plain sentence: what this does to the app", "next": "one plain sentence on how this file leads to the next one in FILES IN ORDER; empty unless the two really work together" }],
+  "files": [{ "file": "path", "did": "at most two short plain sentences: what the agent did in this file", "effect": "one plain sentence: what this does to the app", "next": "one plain sentence on how this file leads to the next one in FILES IN ORDER; empty unless the two really work together", "changes": [{ "title": "at most 8 plain words", "from": 12, "to": 18, "what": "one plain sentence", "used": [{ "file": "path", "line": 6, "how": "at most 6 plain words" }] }] }],
   "links": [{ "from": "path", "to": "path", "how": "at most 8 plain words" }],
   "notes": [{ "file": "path", "line": 12, "why": "plain English, at most 25 words", "source": "stated|inferred|none", "symbols": ["nameInThatLine"] }],
   "steps": [{ "kind": "plan|explored|decision|shortcut|unrequested|skipped", "title": "short", "why": "one plain sentence", "source": "stated|inferred|none", "evidence": [{ "file": "path", "line": 12 }] }],
@@ -541,6 +541,7 @@ Reply with one JSON object only, no prose, in exactly this shape:
 Rules:
 - requirements: split the REQUESTS into each separate thing they ask for. Judge each only from the DIFFS.
 - files: one entry for every file in FILES IN ORDER, in that order. For files under NO AGENT EDIT RECORDED, say what changed; say the agent did it only when the AGENT MESSAGES show a command of its own changed that file.
+- changes: the non-trivial changes in each file (new functions, logic, wiring between files), in line order, at most 6. Skip imports, renames and one-line tweaks. from/to are line numbers in the new file. used says where in OTHER files this code is used, or what it uses there; only files from CONNECTIONS or FILES IN ORDER.
 - links: one entry for each pair in CONNECTIONS, saying how the first file uses the second.
 - notes: at most 25, most important first: every added import and every new call before anything else. Lines are line numbers in the new file.
 - source is "stated" only when the AGENT MESSAGES give that reason, "inferred" when you work it out from the code, "none" when nothing explains it.
@@ -606,7 +607,21 @@ function parseReview(text) {
     .map((item, i) => ({ id: `S${i + 1}`, kind: oneOf(item.kind, ['plan', 'explored', 'decision', 'shortcut', 'unrequested', 'skipped'], 'decision'), title: str(item.title), why: str(item.why), source: source(item.source), evidence: evidence(item.evidence) }))
   const files = list(json.files)
     .filter(item => str(item.file))
-    .map(item => ({ file: str(item.file), did: str(item.did), effect: str(item.effect), next: str(item.next) }))
+    .map(item => ({ file: str(item.file), did: str(item.did), effect: str(item.effect), next: str(item.next), changes: changesOf(item.changes) }))
+  function changesOf(value) {
+    const line = n => (Number.isInteger(n) && n > 0 ? n : null)
+    return list(value)
+      .filter(item => str(item.title) && line(item.from))
+      .map(item => ({
+        title: str(item.title),
+        from: item.from,
+        to: Math.max(item.from, line(item.to) || item.from),
+        what: str(item.what),
+        used: list(item.used).filter(u => str(u.file)).map(u => ({ file: str(u.file), line: line(u.line), how: str(u.how) })),
+      }))
+      .sort((a, b) => a.from - b.from)
+      .slice(0, 6)
+  }
   const links = list(json.links)
     .filter(item => str(item.from) && str(item.to) && str(item.how))
     .map(item => ({ from: str(item.from), to: str(item.to), how: str(item.how) }))
@@ -964,8 +979,11 @@ class RearviewPlugin extends Plugin {
     this.expanded = new Set()
     /** Projects closed in the sidebar, by root. */
     this.collapsed = new Set()
-    /** File cards closed in the main view, as `<change id>:<path>`. */
-    this.closedFiles = new Set()
+    /** File cards whose code is not in its default state (closed with a breakdown, open without), as `<change id>:<path>`. */
+    this.toggledCode = new Set()
+    /** The breakdown change picked, as `<change id>:<path>:<index>`, and whether line notes are hidden. */
+    this.activeChange = null
+    this.hideNotes = false
     this.transcriptCache = new Map()
     /** commit sha -> its changed files */
     this.commitFiles = new Map()
@@ -1742,6 +1760,7 @@ function resultOf(review) {
 }
 
 const pointsAt = (evidence, file) => (evidence || []).some(e => e.file === file)
+const linesIn = (evidence, file) => (evidence || []).filter(e => e.file === file && e.line).map(e => e.line)
 /** Text that ends with a full stop, so a drafted message can go on after it. */
 const sentence = text => (text || '').trim().replace(/([^.!?])$/, '$1.')
 
@@ -1751,18 +1770,43 @@ function flagsFor(file, result) {
   const flags = []
   for (const r of result.requirements) {
     if (r.status === 'done' || !pointsAt(r.evidence, file)) continue
-    flags.push({ kind: r.status, tone: STATUS_TONES[r.status], text: `${r.id} ${r.text}: ${r.finding}`, draft: `${r.id} "${r.text}" is ${r.status} in ${file}: ${sentence(r.finding)} Finish it.` })
+    flags.push({ kind: r.status, tone: STATUS_TONES[r.status], lines: linesIn(r.evidence, file), text: `${r.id} ${r.text}: ${r.finding}`, draft: `${r.id} "${r.text}" is ${r.status} in ${file}: ${sentence(r.finding)} Finish it.` })
   }
   for (const step of result.steps) {
     if (!FLAG_STEPS.includes(step.kind) || !pointsAt(step.evidence, file)) continue
     const draft = step.kind === 'unrequested' ? `Revert "${step.title}" in ${file} unless it is needed: I did not ask for it.` : `About "${step.title}" in ${file}: ${sentence(step.why)} Do this part properly.`
-    flags.push({ kind: STEP_LABELS[step.kind], tone: STEP_TONES[step.kind], text: [step.title, step.why].filter(Boolean).join('. '), draft })
+    flags.push({ kind: STEP_LABELS[step.kind], tone: STEP_TONES[step.kind], lines: linesIn(step.evidence, file), text: [step.title, step.why].filter(Boolean).join('. '), draft })
   }
   for (const v of result.violations) {
     if (!pointsAt(v.evidence, file)) continue
-    flags.push({ kind: 'guardrail', tone: 'red', text: `Goes against "${v.guardrail}": ${v.finding}`, draft: `In ${file} this goes against my guardrail "${v.guardrail}": ${sentence(v.finding)} Fix it.` })
+    flags.push({ kind: 'guardrail', tone: 'red', lines: linesIn(v.evidence, file), text: `Goes against "${v.guardrail}": ${v.finding}`, draft: `In ${file} this goes against my guardrail "${v.guardrail}": ${sentence(v.finding)} Fix it.` })
   }
   return flags
+}
+
+/** A file gets a numbered breakdown only with at least this many non-trivial changes; below it the lead line says it all. */
+const BREAKDOWN_MIN = 2
+/** Breakdown colours, as CSS classes, one per change in order. */
+const CHANGE_COLORS = 6
+
+/**
+ * A file's numbered breakdown: the review's non-trivial changes, or none below BREAKDOWN_MIN. A change's "used"
+ * links are kept only to files the Map really links to this one, or that changed alongside it, so a guess
+ * never shows as a connection.
+ */
+function breakdownOf(info, file, map, changedPaths) {
+  const changes = info && Array.isArray(info.changes) ? info.changes : []
+  if (changes.length < BREAKDOWN_MIN) return []
+  const edges = map ? map.edges : []
+  const linked = new Set([...changedPaths, ...edges.filter(e => e.from === file).map(e => e.to), ...edges.filter(e => e.to === file).map(e => e.from)])
+  const known = [...linked].filter(p => p !== file)
+  const resolve = name => known.find(p => p === name || p.endsWith(`/${name}`)) || null
+  return changes.map(c => ({ ...c, used: (c.used || []).map(u => ({ ...u, file: resolve(u.file) })).filter(u => u.file) }))
+}
+
+/** The breakdown change a line of the new file belongs to, as an index, or -1. */
+function changeAt(changes, line) {
+  return changes.findIndex(c => line >= c.from && line <= c.to)
 }
 
 /**
@@ -2040,9 +2084,22 @@ function renderApproach(el, change, result, shownPaths, project, plugin) {
 }
 
 /** One changed file: what Claude did, what it connects to, anything flagged, then the diff with its Why notes. */
+/**
+ * One changed file. "What Claude did" leads, in large type; a file with several real changes adds a numbered
+ * breakdown, each change matched by number and colour to its block in the code. Code starts closed on a file
+ * with a breakdown, so the summary is read first, and open on any other.
+ */
 function renderFileCard(el, { file, step, info, isOutside, change, result, map, linkHow, project, plugin }) {
   const key = `${change.id}:${file.path}`
-  const isOpen = !plugin.closedFiles.has(key)
+  const changes = breakdownOf(info, file.path, map, change.files.map(f => f.path))
+  const hasBreakdown = changes.length > 0
+  const isOpen = hasBreakdown ? plugin.toggledCode.has(key) : !plugin.toggledCode.has(key)
+  const toggleCode = () => {
+    if (plugin.toggledCode.has(key)) plugin.toggledCode.delete(key)
+    else plugin.toggledCode.add(key)
+    plugin.focus = file.path
+    plugin.refresh([TURN_VIEW, SIDE_VIEW])
+  }
   const section = el.createDiv({ cls: `rv-file${plugin.focus === file.path ? ' is-focus' : ''}` })
   section.dataset.path = file.path
 
@@ -2056,18 +2113,46 @@ function renderFileCard(el, { file, step, info, isOutside, change, result, map, 
   for (const r of serves) chip(head, r.id, 'muted')
   counts(head, file.added, file.removed).addClass('rv-push')
   setIcon(head.createEl('span', { cls: `rv-chevron${isOpen ? ' is-open' : ''}` }), 'chevron-right')
-  head.addEventListener('click', () => {
-    if (isOpen) plugin.closedFiles.add(key)
-    else plugin.closedFiles.delete(key)
-    plugin.focus = file.path
-    plugin.refresh([TURN_VIEW, SIDE_VIEW])
-  })
+  head.addEventListener('click', toggleCode)
 
-  const band = section.createDiv({ cls: 'rv-band' })
-  band.createDiv({ cls: 'rv-band-label', text: isOutside ? 'What changed' : 'What Claude did' })
-  if (info && info.did) band.createEl('p', { cls: 'rv-did', text: info.did })
-  else if (!result) band.createEl('p', { cls: 'rv-muted', text: 'Review these changes to get a plain-English note on this file.' })
+  const flags = flagsFor(file.path, result)
+  const inChange = flag => flag.lines.some(line => changeAt(changes, line) !== -1)
 
+  const hero = section.createDiv({ cls: 'rv-hero' })
+  // Claude speaks here as the story's narrator: a small mark and label, then its words set like a pull-quote.
+  const voice = hero.createDiv({ cls: 'rv-hero-label' })
+  setIcon(voice.createEl('span', { cls: 'rv-hero-icon' }), isOutside ? 'file-diff' : 'sparkles')
+  voice.createEl('span', { text: isOutside ? 'What changed' : 'What Claude did' })
+  if (info && info.did) hero.createEl('p', { cls: 'rv-did', text: info.did })
+  else hero.createEl('p', { cls: 'rv-muted', text: result ? 'The review left no note on this file.' : 'Review these changes to get a plain-English note on this file.' })
+
+  if (hasBreakdown) {
+    const list = hero.createDiv({ cls: 'rv-breakdown' })
+    const title = list.createDiv({ cls: 'rv-breakdown-title' })
+    title.createEl('span', { text: `${changes.length} changes in this file` })
+    title.createEl('span', { cls: 'rv-breakdown-hint', text: 'click one to open the code at that change' })
+    changes.forEach((c, k) => {
+      const changeKey = `${key}:${k}`
+      const row = list.createEl('button', { cls: `rv-change-row rv-k${k % CHANGE_COLORS}${plugin.activeChange === changeKey ? ' is-active' : ''}` })
+      row.createEl('span', { cls: 'rv-kdot', text: String(k + 1) })
+      const words = row.createDiv({ cls: 'rv-change-words' })
+      const top = words.createDiv({ cls: 'rv-change-top' })
+      top.createEl('span', { cls: 'rv-change-title', text: c.title })
+      top.createEl('span', { cls: 'rv-mono rv-change-lines', text: c.from === c.to ? `line ${c.from}` : `lines ${c.from}–${c.to}` })
+      for (const flag of flags.filter(f => f.lines.some(line => line >= c.from && line <= c.to))) chip(top, flag.kind, flag.tone)
+      if (c.what) words.createDiv({ cls: 'rv-change-what', text: c.what })
+      row.addEventListener('click', () => {
+        plugin.activeChange = changeKey
+        plugin.toggledCode.add(key)
+        plugin.focus = file.path
+        plugin.refresh([TURN_VIEW, SIDE_VIEW])
+        const target = [...document.querySelectorAll('.rv-change-head')].find(e => e.dataset.key === changeKey)
+        if (target) target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      })
+    })
+  }
+
+  const band = section.createDiv({ cls: 'rv-band rv-band-sub' })
   const edges = map ? map.edges : []
   const uses = edges.filter(e => e.from === file.path).map(e => ({ path: e.to, how: linkHow(e.from, e.to) || 'used here' }))
   const usedBy = edges.filter(e => e.to === file.path).map(e => ({ path: e.from, how: linkHow(e.from, e.to) || 'uses this' }))
@@ -2081,13 +2166,8 @@ function renderFileCard(el, { file, step, info, isOutside, change, result, map, 
       button.addEventListener('click', () => plugin.showFile(link.path))
     }
   }
-  for (const flag of flagsFor(file.path, result)) {
-    const line = band.createDiv({ cls: `rv-flag rv-flag-${flag.tone}` })
-    chip(line, flag.kind, flag.tone)
-    line.createEl('span', { cls: 'rv-grow', text: flag.text })
-    const guide = line.createEl('button', { cls: 'rv-link', text: 'Guide Claude ›' })
-    guide.addEventListener('click', () => plugin.draftSteer(flag.draft))
-  }
+  // Flags inside a change show with that change in the code; the rest show here.
+  for (const flag of flags.filter(f => !inChange(f))) renderFlag(band, flag, plugin)
   if (result) {
     for (const decision of result.steps.filter(s => s.kind === 'decision' && pointsAt(s.evidence, file.path))) {
       const line = band.createDiv({ cls: 'rv-decided' })
@@ -2095,10 +2175,42 @@ function renderFileCard(el, { file, step, info, isOutside, change, result, map, 
       line.createEl('span', { text: [decision.title, decision.why].filter(Boolean).join('. ') })
     }
   }
-  if (isOpen) renderDiff(section, file, result ? result.notes : [], project, plugin)
+  if (band.children.length === 0) band.remove()
+
+  const notes = result ? result.notes.filter(n => n.file === file.path) : []
+  if (hasBreakdown || notes.length) {
+    const bar = section.createDiv({ cls: 'rv-code-bar' })
+    if (hasBreakdown) {
+      const lines = parseDiff(file.diff || '').filter(row => row.kind !== 'hunk').length
+      const show = bar.createEl('button', { cls: 'rv-code-toggle', attr: { 'aria-expanded': String(isOpen) } })
+      setIcon(show.createEl('span', { cls: `rv-chevron${isOpen ? ' is-open' : ''}` }), 'chevron-right')
+      show.createEl('span', { text: isOpen ? 'Hide the code' : `Show the code · ${lines} lines` })
+      show.addEventListener('click', toggleCode)
+    }
+    if (isOpen && notes.length) {
+      const toggle = bar.createEl('button', { cls: 'rv-link rv-push', text: plugin.hideNotes ? `Show line notes (${notes.length})` : `Hide line notes (${notes.length})` })
+      toggle.addEventListener('click', () => {
+        plugin.hideNotes = !plugin.hideNotes
+        plugin.refresh([TURN_VIEW])
+      })
+    }
+  }
+  if (isOpen) renderDiff(section, file, plugin.hideNotes ? [] : notes, { changes, flags, key, project, plugin })
 }
 
-function renderDiff(section, file, notes, project, plugin) {
+function renderFlag(parent, flag, plugin) {
+  const line = parent.createDiv({ cls: `rv-flag rv-flag-${flag.tone}` })
+  chip(line, flag.kind, flag.tone)
+  line.createEl('span', { cls: 'rv-grow', text: flag.text })
+  const guide = line.createEl('button', { cls: 'rv-link', text: 'Guide Claude ›' })
+  guide.addEventListener('click', () => plugin.draftSteer(flag.draft))
+}
+
+/**
+ * A file's diff with its Why notes. Lines inside a breakdown change carry that change's colour, and the
+ * change's header (number, what it does, where it is used, its flags) sits above its first line.
+ */
+function renderDiff(section, file, fileNotes, { changes, flags, key, project, plugin }) {
   if (file.isSecret) {
     section.createDiv({ cls: 'rv-muted rv-pad', text: 'Contents hidden: this looks like a secrets file, so Rearview never reads it.' })
     return
@@ -2107,16 +2219,25 @@ function renderDiff(section, file, notes, project, plugin) {
     section.createDiv({ cls: 'rv-muted rv-pad', text: 'No line changes to show (a binary, large, renamed or empty file).' })
     return
   }
-  const fileNotes = notes.filter(n => n.file === file.path)
   const placed = new Set()
+  const headed = new Set()
   const code = section.createDiv({ cls: 'rv-code' })
   const rows = parseDiff(file.diff)
+  let current = -1
   for (const row of rows.slice(0, MAX_DIFF_LINES)) {
     if (row.kind === 'hunk') {
+      current = -1
       code.createDiv({ cls: 'rv-hunk', text: row.text })
       continue
     }
-    const line = code.createDiv({ cls: `rv-ln rv-ln-${row.kind}` })
+    // A removed line has no new line number, so it belongs to the change of the line before it.
+    if (row.kind !== 'del') current = changeAt(changes, row.newNo)
+    if (current !== -1 && !headed.has(current)) {
+      headed.add(current)
+      renderChangeHead(code, changes[current], current, `${key}:${current}`, flags, plugin)
+    }
+    const inK = current !== -1 ? ` rv-in-change rv-k${current % CHANGE_COLORS}${plugin.activeChange === `${key}:${current}` ? ' is-active' : ''}` : ''
+    const line = code.createDiv({ cls: `rv-ln rv-ln-${row.kind}${inK}` })
     line.createEl('span', { cls: 'rv-no', text: row.kind === 'del' ? '' : String(row.newNo) })
     line.createEl('span', { cls: 'rv-sign', text: row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : '' })
     line.createEl('span', { cls: 'rv-tx', text: row.text })
@@ -2130,6 +2251,26 @@ function renderDiff(section, file, notes, project, plugin) {
   }
   if (rows.length > MAX_DIFF_LINES) code.createDiv({ cls: 'rv-more', text: `${rows.length - MAX_DIFF_LINES} more lines not shown` })
   for (const note of fileNotes.filter(n => !placed.has(n))) renderWhy(code, note, project, plugin, `Line ${note.line}`)
+}
+
+function renderChangeHead(code, c, k, changeKey, flags, plugin) {
+  const head = code.createDiv({ cls: `rv-change-head rv-k${k % CHANGE_COLORS}${plugin.activeChange === changeKey ? ' is-active' : ''}` })
+  head.dataset.key = changeKey
+  const top = head.createDiv({ cls: 'rv-change-top' })
+  top.createEl('span', { cls: 'rv-kdot', text: String(k + 1) })
+  top.createEl('span', { cls: 'rv-change-title', text: c.title })
+  if (c.what) top.createEl('span', { cls: 'rv-change-what', text: c.what })
+  if (c.used.length) {
+    const used = head.createDiv({ cls: 'rv-change-used' })
+    used.createEl('span', { cls: 'rv-muted', text: 'Connects to' })
+    for (const u of c.used) {
+      const button = used.createEl('button', { cls: 'rv-connect', attr: { title: u.file } })
+      button.createEl('span', { cls: 'rv-mono rv-strong', text: u.line ? `${path.basename(u.file)}:${u.line}` : path.basename(u.file) })
+      if (u.how) button.createEl('span', { cls: 'rv-muted', text: `· ${u.how}` })
+      button.addEventListener('click', () => plugin.showFile(u.file))
+    }
+  }
+  for (const flag of flags.filter(f => f.lines.some(line => line >= c.from && line <= c.to))) renderFlag(head, flag, plugin)
 }
 
 /** Below the cards: files the change reaches without editing them, and parts of the request no card shows. */
@@ -2521,4 +2662,4 @@ class RearviewSettingTab extends PluginSettingTab {
 }
 
 module.exports = RearviewPlugin
-module.exports.testing = { REVIEW_SYSTEM, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, flagsFor, thenLine, resultOf, findImporters, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
+module.exports.testing = { REVIEW_SYSTEM, breakdownOf, changeAt, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, flagsFor, thenLine, resultOf, findImporters, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
