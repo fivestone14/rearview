@@ -286,7 +286,6 @@
 .rv .rv-head { align-items: center; flex-wrap: wrap; }
 .rv .rv-head .rv-crumb { font-size: 12px; color: var(--text-muted); }
 .rv .rv-reviewed-by button { height: auto; padding: 4px 10px; font-size: 12px; }
-.rv .rv-request.is-older { color: var(--text-muted); font-size: var(--font-ui-small); }
 .rv .rv-gaps-link { align-self: flex-start; }
 .rv .rv-approach { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; }
 .rv .rv-approach .rv-grow { flex: 1 1 0; }
@@ -420,3 +419,9 @@
 .rv .rv-change-value { color: var(--text-normal); }
 .rv .rv-change-before, .rv .rv-change-serves { color: var(--text-muted); }
 .rv .rv-change-row.is-extra { border-color: rgba(var(--color-purple-rgb), 0.35); background: rgba(var(--color-purple-rgb), 0.08); }
+.rv .rv-ask { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
+.rv .rv-ask.is-older { opacity: 0.75; }
+.rv .rv-ask.is-older .rv-request { font-size: var(--font-ui-small); }
+.rv .rv-ask-question { display: flex; gap: 8px; align-items: baseline; font-size: var(--font-ui-small); color: var(--text-muted); }
+.rv .rv-ask-reply { display: flex; gap: 8px; align-items: baseline; }
+.rv .rv-ask-who { flex: none; min-width: 84px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint); }

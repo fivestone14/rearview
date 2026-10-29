@@ -440,6 +440,16 @@ async function findTranscriptDir(root) {
   return null
 }
 
+/** The last question in a message (a sentence ending in "?"), without Markdown marks; '' when there is none. */
+function lastQuestion(text) {
+  const sentences = text.replace(/[*_`#>]/g, '').split(/(?<=[.?!])\s+|\n+/).map(x => x.trim()).filter(Boolean)
+  const question = [...sentences].reverse().find(x => x.endsWith('?'))
+  return question && question.length <= 200 ? question : ''
+}
+
+/** A reply this short means little alone, so the question it answered is shown with it and given to the review. */
+const SHORT_REPLY_CHARS = 80
+
 function textOf(content) {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -488,15 +498,30 @@ function parseTranscript(text, root) {
   const turns = []
   let turn = null
   const toolInputs = new Map()
+  // The question Claude put to the person last, so a short reply ("Yes, build it") keeps what it answered:
+  // a question asked with a tool wins over one found at the end of Claude's text.
+  let askedWithTool = ''
+  let askedInText = ''
   for (const row of rows) {
     if (row.isSidechain) continue
     if (isPersonPrompt(row) || isSteer(row)) {
       const steered = isSteer(row)
       const request = (steered ? row.message.content.slice(STEER_PREFIX.length) : textOf(row.message.content)).trim()
       if (!request) continue
-      turn = { id: row.uuid, sessionId: row.sessionId, isSteer: steered, request, answer: '', agentMessages: '', endReason: 'answer', startedAt: Date.parse(row.timestamp) || 0, finishedAt: Date.parse(row.timestamp) || 0, filesRead: [], files: [], commands: [], byPath: new Map() }
+      turn = { id: row.uuid, sessionId: row.sessionId, isSteer: steered, request, answered: askedWithTool || askedInText, answer: '', agentMessages: '', endReason: 'answer', startedAt: Date.parse(row.timestamp) || 0, finishedAt: Date.parse(row.timestamp) || 0, filesRead: [], files: [], commands: [], byPath: new Map() }
       turns.push(turn)
+      askedWithTool = ''
+      askedInText = ''
       continue
+    }
+    if (row.type === 'assistant' && Array.isArray((row.message || {}).content)) {
+      for (const block of row.message.content) {
+        if (block.type === 'text' && block.text.trim()) askedInText = lastQuestion(block.text) || askedInText
+        if (block.type === 'tool_use' && block.input) {
+          const question = typeof block.input.ask === 'string' ? block.input.ask : Array.isArray(block.input.questions) && block.input.questions[0] ? block.input.questions[0].question : ''
+          if (typeof question === 'string' && question.trim()) askedWithTool = question.trim()
+        }
+      }
     }
     if (!turn) continue
     turn.finishedAt = Date.parse(row.timestamp) || turn.finishedAt
@@ -1080,6 +1105,13 @@ class RearviewPlugin extends Plugin {
     const { turns, byClaude, byCommand } = matchTurns(project.turns || [], files, since, until)
     const signature = changeSignature(files)
     const review = this.reviews[item.id] || null
+    // Each request in the person's words, once, with the question it answered when it is a short reply.
+    const asks = []
+    for (const t of turns) {
+      const text = requestText(t.request)
+      if (!text || asks.some(a => a.text === text)) continue
+      asks.push({ text, answered: text.length <= SHORT_REPLY_CHARS && t.answered ? t.answered : '' })
+    }
     return {
       id: item.id,
       root: project.root,
@@ -1090,7 +1122,8 @@ class RearviewPlugin extends Plugin {
       signature,
       label: item.isWorktree ? 'Uncommitted changes' : `Commit ${item.short}`,
       message: item.message || '',
-      requests: [...new Set(turns.map(t => requestText(t.request)).filter(Boolean))],
+      asks,
+      requests: asks.map(a => (a.answered ? `${a.text} (answering: "${a.answered}")` : a.text)),
       agentMessages: turns.map(t => t.agentMessages).filter(Boolean).join('\n\n'),
       filesRead: [...new Set(turns.flatMap(t => t.filesRead))],
       byCommand: [...byCommand],
@@ -2087,14 +2120,23 @@ function renderChange(el, shown, plugin) {
 function renderRequest(el, change, result, plugin) {
   const card = el.createDiv({ cls: 'rv-card' })
   const cardHead = card.createDiv({ cls: 'rv-card-hd' })
-  const requests = change.requests
-  sectionTitle(cardHead, requests.length ? 'You asked' : change.isWorktree ? 'Your request' : 'Commit message')
-  if (requests.length > 1) cardHead.createEl('span', { cls: 'rv-muted', text: `${requests.length} requests since your last commit, newest last` })
-  if (requests.length) {
-    const hidden = requests.length - 3
+  const asks = change.asks
+  sectionTitle(cardHead, asks.length ? 'You asked' : change.isWorktree ? 'Your request' : 'Commit message')
+  if (asks.length > 1) cardHead.createEl('span', { cls: 'rv-muted', text: `${asks.length} requests since your last commit, newest last` })
+  if (asks.length) {
+    const hidden = asks.length - 3
     if (hidden > 0) card.createDiv({ cls: 'rv-muted', text: `and ${hidden} earlier` })
-    requests.slice(-3).forEach((request, i, shownRequests) => {
-      card.createEl('p', { cls: `rv-request${i < shownRequests.length - 1 ? ' is-older' : ''}`, text: request })
+    asks.slice(-3).forEach((ask, i, shown) => {
+      const item = card.createDiv({ cls: `rv-ask${i < shown.length - 1 ? ' is-older' : ''}` })
+      // A short reply shows the question it answered, so "Yes, build it" says what was built.
+      if (ask.answered) {
+        const asked = item.createDiv({ cls: 'rv-ask-question' })
+        asked.createEl('span', { cls: 'rv-ask-who', text: 'Claude asked' })
+        asked.createEl('span', { text: ask.answered })
+      }
+      const said = item.createDiv({ cls: 'rv-ask-reply' })
+      if (ask.answered) said.createEl('span', { cls: 'rv-ask-who', text: 'You' })
+      said.createEl('span', { cls: 'rv-request', text: ask.text })
     })
   } else if (change.isWorktree) {
     card.createEl('p', { cls: 'rv-muted', text: 'No Claude Code request edited these files since your last commit. They may be your own edits.' })
@@ -2685,4 +2727,4 @@ class RearviewSettingTab extends PluginSettingTab {
 }
 
 module.exports = RearviewPlugin
-module.exports.testing = { SideView, commandWrites, REVIEW_SYSTEM, reviewKey, pickReview, breakdownOf, changeAt, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, thenLine, resultOf, findImporters, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
+module.exports.testing = { SideView, lastQuestion, commandWrites, REVIEW_SYSTEM, reviewKey, pickReview, breakdownOf, changeAt, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, thenLine, resultOf, findImporters, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }

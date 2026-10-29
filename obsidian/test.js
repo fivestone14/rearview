@@ -394,6 +394,28 @@ test('each change says what changed, why, and whether it fits the request', () =
   assert.strictEqual(odd.fits, '', 'an unknown fit is left blank rather than guessed')
 })
 
+test('a short reply keeps the question Claude asked before it, and the review is told what it answered', () => {
+  assert.strictEqual(t.lastQuestion('All done.\n\n**Does this layout work?** Tell me.'), 'Does this layout work?')
+  assert.strictEqual(t.lastQuestion('No question here.'), '')
+  const text = [
+    row({ type: 'user', uuid: 'u1', sessionId: 's', timestamp: '2026-10-29T10:00:00Z', origin: { kind: 'human' }, message: { content: 'Mock up the card' } }),
+    row({ type: 'assistant', timestamp: '2026-10-29T10:00:01Z', message: { content: [{ type: 'tool_use', id: 'w', name: 'mcp__ccd_turn__wrap_up', input: { ask: 'Does the Changed / Why / Fits? format work?' } }, { type: 'text', text: 'Here it is. Want anything else?' }] } }),
+    row({ type: 'user', uuid: 'u2', sessionId: 's', timestamp: '2026-10-29T10:05:00Z', origin: { kind: 'human' }, message: { content: 'Yes, build it' } }),
+    row({ type: 'user', toolUseResult: { filePath: '/p/a.ts', structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }] }, timestamp: '2026-10-29T10:05:01Z', message: { content: [] } }),
+  ].join('\n')
+  const turns = t.parseTranscript(text, '/p')
+  assert.strictEqual(turns[0].answered, '', 'the first request answered nothing')
+  assert.strictEqual(turns[1].answered, 'Does the Changed / Why / Fits? format work?', 'a question asked with a tool wins over one in the text')
+
+  const plugin = Object.create(Rearview.prototype)
+  plugin.reviews = {}
+  const files = [{ path: 'a.ts', change: 'edited', diff: '+b' }]
+  const project = { root: '/p', turns, git: { commits: [], worktree: { id: 'wt:/p', isWorktree: true, files } } }
+  const change = plugin.changeOf(project, project.git.worktree)
+  assert.deepStrictEqual(change.asks, [{ text: 'Yes, build it', answered: 'Does the Changed / Why / Fits? format work?' }])
+  assert.deepStrictEqual(change.requests, ['Yes, build it (answering: "Does the Changed / Why / Fits? format work?")'])
+})
+
 // ---------- Git ----------
 
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, stdio: 'pipe' })
