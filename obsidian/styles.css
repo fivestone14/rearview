@@ -410,3 +410,13 @@
 .rv .rv-leftovers .rv-flag { margin-bottom: 6px; }
 .rv .rv-change-head { flex-direction: row; align-items: center; gap: 10px; font-weight: 600; }
 .rv .rv-file.is-closed .rv-file-hd { border-bottom: 0; }
+.rv .rv-change-grid { display: grid; grid-template-columns: max-content 1fr; gap: 3px 10px; margin-top: 2px; font-size: var(--font-ui-small); }
+.rv .rv-change-key { font-weight: 600; }
+.rv .rv-change-key.is-changed { color: var(--text-normal); }
+.rv .rv-change-key.is-why { color: var(--text-accent); }
+.rv .rv-change-key.is-fit-green { color: var(--color-green); }
+.rv .rv-change-key.is-fit-orange { color: var(--color-orange); }
+.rv .rv-change-key.is-fit-purple { color: var(--color-purple); }
+.rv .rv-change-value { color: var(--text-normal); }
+.rv .rv-change-before, .rv .rv-change-serves { color: var(--text-muted); }
+.rv .rv-change-row.is-extra { border-color: rgba(var(--color-purple-rgb), 0.35); background: rgba(var(--color-purple-rgb), 0.08); }

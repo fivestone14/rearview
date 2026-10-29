@@ -559,7 +559,7 @@ const REVIEW_SYSTEM = `You review the changes an AI coding agent made to a proje
 Reply with one JSON object only, no prose, in exactly this shape:
 {
   "requirements": [{ "text": "short restatement", "quote": "the person's own words", "status": "done|partly|missed", "finding": "one plain sentence", "evidence": [{ "file": "path", "line": 12 }] }],
-  "files": [{ "file": "path", "did": "at most two short plain sentences: what the agent did in this file", "why": "one plain sentence: why it did it", "effect": "one plain sentence: what this does to the app", "next": "one plain sentence on how this file leads to the next one in FILES IN ORDER; empty unless the two really work together", "changes": [{ "title": "at most 8 plain words", "from": 12, "to": 18, "what": "one plain sentence: what it does", "why": "one plain sentence: why the agent did it", "used": [{ "file": "path", "line": 6, "how": "at most 6 plain words" }] }] }],
+  "files": [{ "file": "path", "did": "at most two short plain sentences: what the agent did in this file", "why": "one plain sentence: why it did it", "effect": "one plain sentence: what this does to the app", "next": "one plain sentence on how this file leads to the next one in FILES IN ORDER; empty unless the two really work together", "changes": [{ "title": "at most 8 plain words", "from": 12, "to": 18, "before": "at most 8 words: what was there or happened before", "now": "at most 8 words: what it does now", "why": "at most 12 words: why, in the person's terms", "fits": "yes|partly|no", "serves": "at most 8 words: the person's own words this serves, or, for no, why the agent added it anyway", "used": [{ "file": "path", "line": 6, "how": "at most 6 plain words" }] }] }],
   "links": [{ "from": "path", "to": "path", "how": "at most 8 plain words" }],
   "notes": [{ "file": "path", "line": 12, "why": "plain English, at most 25 words", "source": "stated|inferred|none", "symbols": ["nameInThatLine"] }],
   "steps": [{ "kind": "plan|explored|decision|shortcut|unrequested|skipped", "title": "short", "why": "one plain sentence", "source": "stated|inferred|none", "evidence": [{ "file": "path", "line": 12 }] }],
@@ -568,7 +568,7 @@ Reply with one JSON object only, no prose, in exactly this shape:
 Rules:
 - requirements: split the REQUESTS into each separate thing they ask for. Judge each only from the DIFFS.
 - files: one entry for every file in FILES IN ORDER, in that order. Files under CHANGED BY AN AGENT COMMAND are the agent's work, done with a shell command instead of an edit. For files under NO AGENT CHANGE RECORDED, say what changed, never that the agent did it.
-- changes: the non-trivial changes in each file (new functions, logic, wiring between files), in line order, at most 6. Skip imports, renames and one-line tweaks. from/to are line numbers in the new file. used says where in OTHER files this code is used, or what it uses there; only files from CONNECTIONS or FILES IN ORDER.
+- changes: the non-trivial changes in each file (new functions, logic, wiring between files), in line order, at most 8. Skip imports, renames and one-line tweaks, but always include a change nobody asked for. from/to are line numbers in the new file. before/now/why use plain words, no code names. fits says whether the change matches the REQUESTS: "yes", "partly", or "no" for something nobody asked for. used says where in OTHER files this code is used, or what it uses there; only files from CONNECTIONS or FILES IN ORDER.
 - links: one entry for each pair in CONNECTIONS, saying how the first file uses the second.
 - notes: at most 25, most important first: every added import and every new call before anything else. Lines are line numbers in the new file.
 - source is "stated" only when the AGENT MESSAGES give that reason, "inferred" when you work it out from the code, "none" when nothing explains it.
@@ -645,11 +645,15 @@ function parseReview(text) {
         from: item.from,
         to: Math.max(item.from, line(item.to) || item.from),
         what: str(item.what),
+        before: str(item.before),
+        now: str(item.now),
         why: str(item.why),
+        fits: oneOf(item.fits, ['yes', 'partly', 'no'], ''),
+        serves: str(item.serves),
         used: list(item.used).filter(u => str(u.file)).map(u => ({ file: str(u.file), line: line(u.line), how: str(u.how) })),
       }))
       .sort((a, b) => a.from - b.from)
-      .slice(0, 6)
+      .slice(0, 8)
   }
   const links = list(json.links)
     .filter(item => str(item.from) && str(item.to) && str(item.how))
@@ -1823,6 +1827,8 @@ const sentence = text => (text || '').trim().replace(/([^.!?])$/, '$1.')
 
 /** A file gets a numbered breakdown only with at least this many non-trivial changes; below it the lead line says it all. */
 const BREAKDOWN_MIN = 2
+/** How a change's fit with the request is marked: its tag and colour. */
+const FITS = { yes: ['fits', 'green'], partly: ['partly', 'orange'], no: ['not asked for', 'purple'] }
 /** Breakdown colours, as CSS classes, one per change in order. */
 const CHANGE_COLORS = 6
 
@@ -2155,6 +2161,7 @@ function renderFileCard(el, { file, step, info, isOutside, change, result, ownSt
   const key = `${change.id}:${file.path}`
   const changes = breakdownOf(info, file.path, map, change.files.map(f => f.path))
   const hasBreakdown = changes.length > 0
+  const allChanges = info && Array.isArray(info.changes) ? info.changes : []
   const isCardOpen = plugin.openCards.has(key)
   const isOpen = hasBreakdown ? plugin.toggledCode.has(key) : !plugin.toggledCode.has(key)
   const toggleCard = () => {
@@ -2177,6 +2184,11 @@ function renderFileCard(el, { file, step, info, isOutside, change, result, ownSt
   head.createEl('span', { cls: 'rv-mono rv-strong rv-file-path', text: file.path })
   const [label, tone] = CHANGE_LABELS[file.change] || ['Changed', 'muted']
   chip(head, label, tone)
+  // How the changes fit the request, counted, so a folded card still shows anything nobody asked for.
+  for (const fit of ['yes', 'partly', 'no']) {
+    const n = allChanges.filter(c => c.fits === fit).length
+    if (n) chip(head, fit === 'yes' ? `${n} fit` : `${n} ${FITS[fit][0]}`, FITS[fit][1])
+  }
   counts(head, file.added, file.removed).addClass('rv-push')
   setIcon(head.createEl('span', { cls: `rv-chevron${isCardOpen ? ' is-open' : ''}` }), 'chevron-right')
   head.addEventListener('click', toggleCard)
@@ -2190,6 +2202,14 @@ function renderFileCard(el, { file, step, info, isOutside, change, result, ownSt
   if (info && info.did) hero.createEl('p', { cls: 'rv-did', text: info.did })
   else if (!ownState.isPending) hero.createEl('p', { cls: 'rv-muted', text: result ? 'The review left no note on this file.' : 'No review of this file yet.' })
   if (!hasBreakdown && info && info.why) whyLine(hero, info.why, 'rv-why-lead')
+  // One change makes no list, but whether it is what was asked for still shows.
+  const single = !hasBreakdown && allChanges.length === 1 ? allChanges[0] : null
+  if (single && single.fits) {
+    const line = hero.createDiv({ cls: 'rv-change-why rv-why-lead' })
+    line.createEl('span', { cls: `rv-why-word rv-change-key is-fit-${FITS[single.fits][1]}`, text: 'Fits?' })
+    chip(line, FITS[single.fits][0], FITS[single.fits][1])
+    if (single.serves) line.createEl('span', { cls: 'rv-change-serves', text: ` ${single.serves}` })
+  }
 
   const reviewThis = text => {
     const button = hero.createEl('button', { cls: 'rv-link rv-review-file', text })
@@ -2211,14 +2231,29 @@ function renderFileCard(el, { file, step, info, isOutside, change, result, ownSt
     list.createDiv({ cls: 'rv-breakdown-title', text: `${changes.length} changes in this file` })
     changes.forEach((c, k) => {
       const changeKey = `${key}:${k}`
-      const row = list.createEl('button', { cls: `rv-change-row rv-k${k % CHANGE_COLORS}${plugin.activeChange === changeKey ? ' is-active' : ''}` })
+      const row = list.createEl('button', { cls: `rv-change-row rv-k${k % CHANGE_COLORS}${plugin.activeChange === changeKey ? ' is-active' : ''}${c.fits === 'no' ? ' is-extra' : ''}` })
       row.createEl('span', { cls: 'rv-kdot', text: String(k + 1) })
       const words = row.createDiv({ cls: 'rv-change-words' })
       const top = words.createDiv({ cls: 'rv-change-top' })
       top.createEl('span', { cls: 'rv-change-title', text: c.title })
       top.createEl('span', { cls: 'rv-mono rv-change-lines', text: c.from === c.to ? `line ${c.from}` : `lines ${c.from}–${c.to}` })
-      if (c.what) words.createDiv({ cls: 'rv-change-what', text: c.what })
-      if (c.why) whyLine(words, c.why)
+      // Three short lines answer what changed, why, and whether it is what was asked for.
+      const grid = words.createDiv({ cls: 'rv-change-grid' })
+      const line = (key, cls) => {
+        grid.createEl('span', { cls: `rv-change-key ${cls}`, text: key })
+        return grid.createEl('span', { cls: 'rv-change-value' })
+      }
+      if (c.before && c.now) {
+        const value = line('Changed', 'is-changed')
+        value.createEl('span', { cls: 'rv-change-before', text: c.before })
+        value.createEl('span', { text: ` → ${c.now}` })
+      } else if (c.what) line('Changed', 'is-changed').setText(c.what)
+      if (c.why) line('Why', 'is-why').setText(c.why)
+      if (c.fits) {
+        const value = line('Fits?', `is-fit-${FITS[c.fits][1]}`)
+        chip(value, FITS[c.fits][0], FITS[c.fits][1])
+        if (c.serves) value.createEl('span', { cls: 'rv-change-serves', text: ` ${c.serves}` })
+      }
       row.addEventListener('click', () => {
         plugin.activeChange = changeKey
         plugin.toggledCode.add(key)

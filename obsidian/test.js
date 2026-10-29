@@ -382,6 +382,18 @@ test('the transcript keeps Claude\'s shell commands, with the project folder tak
   assert.deepStrictEqual(t.parseTranscript(text, '/p')[0].commands, ['echo x > src/a.ts'])
 })
 
+test('each change says what changed, why, and whether it fits the request', () => {
+  const review = t.parseReview(JSON.stringify({ files: [{ file: 'a.ts', did: 'Did it.', changes: [
+    { title: 'Fold cards', from: 5, before: 'every card opened in full', now: 'one row per file', why: 'See every file at once.', fits: 'yes', serves: 'collapse them all' },
+    { title: 'Hide Then lines', from: 9, before: 'a line between cards', now: 'only under open cards', why: 'Keeps the list short.', fits: 'no', serves: 'added to support folding' },
+    { title: 'Odd fit', from: 12, fits: 'maybe' },
+  ] }] }))
+  const [fold, extra, odd] = review.files[0].changes
+  assert.deepStrictEqual([fold.before, fold.now, fold.fits, fold.serves], ['every card opened in full', 'one row per file', 'yes', 'collapse them all'])
+  assert.strictEqual(extra.fits, 'no')
+  assert.strictEqual(odd.fits, '', 'an unknown fit is left blank rather than guessed')
+})
+
 // ---------- Git ----------
 
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, stdio: 'pipe' })
