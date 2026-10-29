@@ -33,13 +33,7 @@ const DEFAULT_GUARDRAILS = [
   { text: 'Reuse existing helpers before adding new code', on: false },
 ]
 
-const SOURCES = {
-  stated: { label: 'Claude said so', tone: 'blue' },
-  inferred: { label: 'Inferred', tone: 'green' },
-  none: { label: 'No reason found', tone: 'muted' },
-}
 const STATUS_TONES = { done: 'green', partly: 'orange', missed: 'red' }
-const STEP_TONES = { plan: 'muted', explored: 'muted', decision: 'blue', shortcut: 'orange', unrequested: 'purple', skipped: 'red' }
 const CHANGE_LABELS = {
   new: ['New file', 'green'],
   edited: ['Edited', 'muted'],
@@ -93,23 +87,6 @@ function requestText(request) {
 function titleOf(request) {
   const first = requestText(request).split('\n').map(line => line.trim()).find(Boolean) || ''
   return first.length > 60 ? `${first.slice(0, 57)}…` : first || '(no request text)'
-}
-
-/**
- * One message listing what the review found partly done, missed, not requested or against a principle,
- * or '' when there are no gaps. It goes into the Steer box, so the person reads and edits it before sending.
- */
-function gapsMessage(result) {
-  const gaps = [
-    ...result.requirements.filter(r => r.status !== 'done').map(r => `${r.text} (${r.status}): ${r.finding}`),
-    ...result.steps.filter(s => s.kind === 'unrequested').map(s => `Not requested: ${s.title}. Revert it unless it is needed.`),
-    ...result.violations.map(v => `Goes against the guardrail "${v.guardrail}": ${v.finding}`),
-  ]
-  if (gaps.length === 0) return ''
-  return (
-    'A review of your latest changes flagged these gaps. It can be wrong, so check each one against the code and fix only the real ones:\n' +
-    gaps.map((gap, i) => `${i + 1}. ${gap}`).join('\n')
-  )
 }
 
 /** The sidebar shows this many of a project's newest commits until "Show all". */
@@ -585,9 +562,8 @@ Reply with one JSON object only, no prose, in exactly this shape:
 {
   "asks": [{ "n": 1, "meaning": "one plain sentence: what this request was really asking for" }],
   "requirements": [{ "text": "short restatement", "quote": "the person's own words", "status": "done|partly|missed", "finding": "one plain sentence", "evidence": [{ "file": "path", "line": 12 }] }],
-  "files": [{ "file": "path", "did": "at most two short plain sentences: what the agent did in this file", "why": "one plain sentence: why it did it", "effect": "one plain sentence: what this does to the app", "next": "one plain sentence on how this file leads to the next one in FILES IN ORDER; empty unless the two really work together", "changes": [{ "title": "at most 8 plain words", "from": 12, "to": 18, "before": "at most 8 words: what was there or happened before", "now": "at most 8 words: what it does now", "why": "at most 12 words: why, in the person's terms", "ask": 1, "fits": "yes|further|no", "serves": "at most 12 words: for further, what it adds beyond the request; for no, why the agent added it", "used": [{ "file": "path", "line": 6, "how": "at most 6 plain words" }] }] }],
+  "files": [{ "file": "path", "did": "at most two short plain sentences: what the agent did in this file", "why": "one plain sentence: why it did it", "effect": "one plain sentence: what this does to the app", "changes": [{ "title": "at most 8 plain words", "from": 12, "to": 18, "before": "at most 8 words: what was there or happened before", "now": "at most 8 words: what it does now", "why": "at most 12 words: why, in the person's terms", "ask": 1, "fits": "yes|further|no", "serves": "at most 12 words: for further, what it adds beyond the request; for no, why the agent added it", "used": [{ "file": "path", "line": 6, "how": "at most 6 plain words" }] }] }],
   "links": [{ "from": "path", "to": "path", "how": "at most 8 plain words" }],
-  "notes": [{ "file": "path", "line": 12, "why": "plain English, at most 25 words", "source": "stated|inferred|none", "symbols": ["nameInThatLine"] }],
   "steps": [{ "kind": "plan|explored|decision|shortcut|unrequested|skipped", "title": "short", "why": "one plain sentence", "source": "stated|inferred|none", "evidence": [{ "file": "path", "line": 12 }] }],
   "violations": [{ "guardrail": "the guardrail's words", "finding": "one plain sentence", "evidence": [{ "file": "path", "line": 12 }] }]
 }
@@ -597,8 +573,8 @@ Rules:
 - files: one entry for every file in FILES IN ORDER, in that order. Files under CHANGED BY AN AGENT COMMAND are the agent's work, done with a shell command instead of an edit. For files under NO AGENT CHANGE RECORDED, say what changed, never that the agent did it.
 - changes: the non-trivial changes in each file (new functions, logic, wiring between files), in line order, at most 8. Skip imports, renames and one-line tweaks, but always include a change nobody asked for. from/to are line numbers in the new file. before/now/why use plain words, no code names. ask is the number of the request in REQUESTS this change serves, or 0 when none asked for it. fits is "yes" when it does what that request asked, "further" when it goes beyond it, "no" when nobody asked for it. used says where in OTHER files this code is used, or what it uses there; only files from CONNECTIONS or FILES IN ORDER.
 - links: one entry for each pair in CONNECTIONS, saying how the first file uses the second.
-- notes: at most 25, most important first: every added import and every new call before anything else. Lines are line numbers in the new file.
 - source is "stated" only when the AGENT MESSAGES give that reason, "inferred" when you work it out from the code, "none" when nothing explains it.
+- changes are the heart of the review: a person reads a change's before, now and why instead of the diff, so make each one say what a reviewer would want to know.
 - steps: at most 12. Rebuild the agent's reasoning in order. Use "unrequested" for any change no requirement asked for, "skipped" for a requirement it did not do, "shortcut" for a partial or easy way out.
 - violations: only for the GUARDRAILS listed, and only when the DIFFS clearly go against one.
 - Keep every text short so the whole reply fits.
@@ -654,15 +630,12 @@ function parseReview(text) {
   const requirements = list(json.requirements)
     .filter(item => str(item.text))
     .map((item, i) => ({ id: `R${i + 1}`, text: str(item.text), quote: str(item.quote), status: oneOf(item.status, ['done', 'partly', 'missed'], 'partly'), finding: str(item.finding), evidence: evidence(item.evidence) }))
-  const notes = list(json.notes)
-    .filter(item => str(item.file) && typeof item.line === 'number' && str(item.why))
-    .map(item => ({ file: str(item.file), line: item.line, why: str(item.why), source: source(item.source), symbols: [...new Set((Array.isArray(item.symbols) ? item.symbols : []).filter(s => typeof s === 'string' && /^[\w$]+$/.test(s)))] }))
   const steps = list(json.steps)
     .filter(item => str(item.title))
     .map((item, i) => ({ id: `S${i + 1}`, kind: oneOf(item.kind, ['plan', 'explored', 'decision', 'shortcut', 'unrequested', 'skipped'], 'decision'), title: str(item.title), why: str(item.why), source: source(item.source), evidence: evidence(item.evidence) }))
   const files = list(json.files)
     .filter(item => str(item.file))
-    .map(item => ({ file: str(item.file), did: str(item.did), why: str(item.why), effect: str(item.effect), next: str(item.next), changes: changesOf(item.changes) }))
+    .map(item => ({ file: str(item.file), did: str(item.did), why: str(item.why), effect: str(item.effect), changes: changesOf(item.changes) }))
   function changesOf(value) {
     const line = n => (Number.isInteger(n) && n > 0 ? n : null)
     return list(value)
@@ -693,8 +666,8 @@ function parseReview(text) {
   const asks = list(json.asks)
     .filter(item => Number.isInteger(item.n) && item.n > 0 && str(item.meaning))
     .map(item => ({ n: item.n, meaning: str(item.meaning) }))
-  if (requirements.length === 0 && notes.length === 0 && steps.length === 0 && files.length === 0) return null
-  return { asks, requirements, files, links, notes, steps, violations }
+  if (requirements.length === 0 && steps.length === 0 && files.length === 0) return null
+  return { asks, requirements, files, links, steps, violations }
 }
 
 // ---------- Review model: CLI tools you already use, hosted APIs with a key, or a model on this computer ----------
@@ -1046,13 +1019,14 @@ class RearviewPlugin extends Plugin {
     this.collapsed = new Set()
     /** The main view groups changes by request (the default) or by file. */
     this.viewMode = 'request'
-    /** File cards opened in the main view (all start closed), as `<change id>:<path>`. */
+    /** Files opened in the by-file view (all start closed), as `<change id>:<path>`; `…:other` opens a file's other lines. */
     this.openCards = new Set()
-    /** File cards whose code is not in its default state (closed with a breakdown, open without), as `<change id>:<path>`. */
-    this.toggledCode = new Set()
-    /** The breakdown change picked, as `<change id>:<path>:<index>`, and whether line notes are hidden. */
+    /** Requests opened or closed by hand in the by-request view, by `<change id>:ask:<n>`; `…:matches` for a folded matches line. */
+    this.openRequests = new Map()
+    /** Changes ticked "Looks good", as `<change id>:<path>:<from line>`. */
+    this.checked = new Set()
+    /** The change opened to its Changed / Why, by the same key. */
     this.activeChange = null
-    this.hideNotes = false
     this.transcriptCache = new Map()
     /** commit sha -> its changed files */
     this.commitFiles = new Map()
@@ -1482,16 +1456,27 @@ class RearviewPlugin extends Plugin {
     return leaf
   }
 
-  /** Makes a file the one the right sidebar is about, and brings its card into view when it is a changed file. */
-  async showFile(file) {
+  /** Makes a file the one the right sidebar is about, and brings it into view in the by-file view when it changed. */
+  async showFile(file, changeKey = null) {
     this.focus = file
     const shown = this.current()
-    if (shown && shown.change.files.some(f => f.path === file)) this.openCards.add(`${shown.change.id}:${file}`)
+    const isChanged = !!shown && shown.change.files.some(f => f.path === file)
+    if (isChanged) {
+      this.viewMode = 'file'
+      this.openCards.add(`${shown.change.id}:${file}`)
+      if (changeKey) this.activeChange = changeKey
+    }
     if (this.panel === 'trace') this.panel = 'links'
     const leaf = await this.openTurnView()
     this.refresh([TURN_VIEW, SIDE_VIEW])
-    const section = [...leaf.view.contentEl.querySelectorAll('.rv-file')].find(el => el.dataset.path === file)
-    if (section) section.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    const root = leaf.view.contentEl
+    const target = (changeKey && [...root.querySelectorAll('.rv-item')].find(el => el.dataset.key === changeKey)) || [...root.querySelectorAll('.rv-file')].find(el => el.dataset.path === file)
+    if (target) target.scrollIntoView({ block: changeKey ? 'center' : 'start', behavior: 'smooth' })
+  }
+
+  /** Jumps from a change in the by-request view to its code in the by-file view. */
+  showChange(file, changeKey) {
+    return this.showFile(file, changeKey)
   }
 
   runTrace(root, symbol) {
@@ -1616,10 +1601,6 @@ function emptyState(el, plugin) {
   button.addEventListener('click', () => new ProjectModal(plugin.app, plugin, null).open())
 }
 
-function sectionTitle(parent, text) {
-  return parent.createEl('div', { cls: 'rv-h', text })
-}
-
 // ---------- left sidebar: projects ----------
 
 class TurnsView extends ItemView {
@@ -1646,7 +1627,7 @@ class TurnsView extends ItemView {
     el.addClass('rv')
     const projects = [...this.plugin.projects.values()]
     const head = el.createDiv({ cls: 'rv-sidebar-head' })
-    head.createEl('span', { cls: 'rv-sidebar-title', text: 'Projects' })
+    head.createEl('span', { cls: 'rv-lab', text: 'Projects' })
     if (projects.length > 1) {
       const anyOpen = projects.some(project => !this.plugin.collapsed.has(project.root))
       const all = head.createEl('button', { cls: 'rv-more-link rv-push', text: anyOpen ? 'Collapse all' : 'Expand all' })
@@ -1826,14 +1807,8 @@ class ProjectModal extends Modal {
   }
 }
 
-// ---------- main tab: what changed, file by file, in the order the files build on each other ----------
+// ---------- main tab: the review, by request or by file ----------
 
-/** How each kind of reasoning step is named on a flag. */
-const STEP_LABELS = { plan: 'plan', explored: 'explored', decision: 'decision', shortcut: 'shortcut', unrequested: 'not asked for', skipped: 'skipped' }
-/** "How Claude went about it" shows this many steps until "Show all". */
-const APPROACH_STEPS = 3
-/** Steps that are problems; "How Claude went about it" lists them first. */
-const FLAG_STEPS = ['shortcut', 'unrequested', 'skipped']
 /** How each kind of file on the Map is marked: a letter, as `git status` uses, and a colour. */
 const MAP_MARKS = {
   new: { letter: 'A', label: 'New file', tone: 'green' },
@@ -1842,6 +1817,8 @@ const MAP_MARKS = {
   affected: { letter: '~', label: 'Affected, not edited', tone: 'orange' },
   untouched: { letter: '', label: 'Unchanged, used by the changes', tone: 'muted' },
 }
+/** How a change's fit with the request is marked: its tag and colour. */
+const FITS = { yes: ['matches', 'green'], further: ['goes further', 'orange'], no: ['not asked for', 'purple'] }
 
 /** Where a review is kept: the change's id, or `<id>#<file>` for one file's own review. */
 function reviewKey(id, file) {
@@ -1849,7 +1826,7 @@ function reviewKey(id, file) {
 }
 
 /**
- * The review a file card draws on: the file's own review or the whole change's, whichever finished last.
+ * The review a file draws on: the file's own review or the whole change's, whichever finished last.
  * Either is null when there is none; a running or failed review is not drawn from.
  */
 function pickReview(whole, own) {
@@ -1860,50 +1837,67 @@ function pickReview(whole, own) {
 /** A finished review's result with every list present (reviews saved before a field existed lack it); null without one. */
 function resultOf(review) {
   if (!review || review.state !== 'done') return null
-  return { asks: [], requirements: [], files: [], links: [], notes: [], steps: [], violations: [], ...review.result }
+  return { asks: [], requirements: [], files: [], links: [], steps: [], violations: [], ...review.result }
 }
 
-const pointsAt = (evidence, file) => (evidence || []).some(e => e.file === file)
 /** Text that ends with a full stop, so a drafted message can go on after it. */
 const sentence = text => (text || '').trim().replace(/([^.!?])$/, '$1.')
+const lineWord = c => (c.from === c.to ? `line ${c.from}` : `lines ${c.from}–${c.to}`)
 
-/** A file gets a numbered breakdown only with at least this many non-trivial changes; below it the lead line says it all. */
-const BREAKDOWN_MIN = 2
-/** How a change's fit with the request is marked: its tag and colour. */
-const FITS = { yes: ['matches', 'green'], further: ['goes further', 'orange'], no: ['not asked for', 'purple'] }
-/** Breakdown colours, as CSS classes, one per change in order. */
-const CHANGE_COLORS = 6
-
-/**
- * A file's numbered breakdown: the review's non-trivial changes, or none below BREAKDOWN_MIN. A change's "used"
- * links are kept only to files the Map really links to this one, or that changed alongside it, so a guess
- * never shows as a connection.
- */
-function breakdownOf(info, file, map, changedPaths) {
-  const changes = info && Array.isArray(info.changes) ? info.changes : []
-  if (changes.length < BREAKDOWN_MIN) return []
-  const edges = map ? map.edges : []
-  const linked = new Set([...changedPaths, ...edges.filter(e => e.from === file).map(e => e.to), ...edges.filter(e => e.to === file).map(e => e.from)])
-  const known = [...linked].filter(p => p !== file)
-  const resolve = name => known.find(p => p === name || p.endsWith(`/${name}`)) || null
-  return changes.map(c => ({ ...c, used: (c.used || []).map(u => ({ ...u, file: resolve(u.file) })).filter(u => u.file) }))
-}
-
-/** The breakdown change a line of the new file belongs to, as an index, or -1. */
+/** The change a line of the new file belongs to, as an index into `changes`, or -1. */
 function changeAt(changes, line) {
   return changes.findIndex(c => line >= c.from && line <= c.to)
 }
 
 /**
- * The "Then ↓" line between two cards: the review's sentence, or which of the two uses the other. Only files
- * linked by imports to another changed file (`linked`) get one, so the story never claims a link that is not there.
+ * Every change of every file, each with the review it came from: the file's own review or the whole change's,
+ * whichever finished last. `key` names the change for ticks and highlights, and stays the same across redraws.
  */
-function thenLine(info, from, to, edges, linked) {
-  if (!linked.has(from) || !linked.has(to)) return ''
-  if (info && info.next) return info.next
-  if (edges.some(e => e.from === to && e.to === from)) return `${path.basename(to)} uses ${path.basename(from)}.`
-  if (edges.some(e => e.from === from && e.to === to)) return `${path.basename(from)} uses ${path.basename(to)}.`
-  return ''
+function changesByFile(change, order, plugin) {
+  const all = []
+  for (const filePath of order) {
+    const own = plugin.reviews[reviewKey(change.id, filePath)] || null
+    const chosen = pickReview(change.review, own)
+    const result = resultOf(chosen)
+    const info = result ? result.files.find(f => f.file === filePath) : null
+    for (const [k, c] of ((info && info.changes) || []).entries()) all.push({ file: filePath, k, c, review: chosen, result, key: `${change.id}:${filePath}:${c.from}` })
+  }
+  return all
+}
+
+/**
+ * The changes grouped under the request they came from, newest request first. A change names its request by
+ * number in the list its review was given (kept with the review), so a request that arrived later does not
+ * shift it; one that names no request, or that nobody asked for, goes to `extras`.
+ */
+function groupByRequest(asks, entries) {
+  const groups = asks.map((ask, i) => ({ ask, n: i + 1, meaning: '', changes: [] }))
+  const extras = []
+  for (const entry of entries) {
+    const { c, review, result } = entry
+    const texts = (review && review.requests) || asks.map(a => a.text)
+    const text = c.ask ? texts[c.ask - 1] : null
+    const group = text ? groups.find(g => g.ask.text === text) : null
+    if (!group || c.fits === 'no') {
+      extras.push(entry)
+      continue
+    }
+    group.changes.push(entry)
+    const meant = result && result.asks.find(a => a.n === c.ask)
+    if (meant && !group.meaning) group.meaning = meant.meaning
+  }
+  return { groups: groups.reverse(), extras }
+}
+
+/** The lines of a file's diff that fall inside one change, with a little context either side. */
+function snippetOf(file, c) {
+  const rows = parseDiff(file.diff || '').filter(r => r.kind !== 'hunk')
+  const inside = r => (r.kind === 'del' ? r.oldNo >= c.from - 1 && r.oldNo <= c.to + 1 : r.newNo >= c.from && r.newNo <= c.to)
+  const first = rows.findIndex(inside)
+  if (first === -1) return []
+  let last = first
+  for (let i = rows.length - 1; i > first; i--) if (inside(rows[i])) { last = i; break }
+  return rows.slice(Math.max(0, first - 1), Math.min(rows.length, last + 2))
 }
 
 class TurnView extends ItemView {
@@ -1930,7 +1924,7 @@ class TurnView extends ItemView {
 
   render() {
     const el = this.contentEl
-    el.addClass('rv', 'rv-turn')
+    el.addClass('rv', 'rv-main')
     // The guide bar lives outside the redrawn part, so a redraw while the person types keeps their cursor.
     if (!this.bodyEl || !el.contains(this.bodyEl)) {
       el.empty()
@@ -1938,14 +1932,14 @@ class TurnView extends ItemView {
       this.guideEl = el.createDiv({ cls: 'rv-guide' })
     }
     const shown = this.plugin.current()
-    const key = shown ? shown.change.id : null
-    // A redraw of the same change keeps the reader's place.
-    const scrollTop = key === this.shownKey ? el.scrollTop : 0
+    const key = shown ? `${shown.change.id}:${this.plugin.viewMode}` : null
+    // A redraw of the same view keeps the reader's place.
+    const scrollTop = key === this.shownKey ? this.bodyEl.scrollTop : 0
     this.shownKey = key
     this.bodyEl.empty()
     renderChange(this.bodyEl, shown, this.plugin)
     this.renderGuide(false)
-    el.scrollTop = scrollTop
+    this.bodyEl.scrollTop = scrollTop
     // The tab and header titles come from getDisplayText, which Obsidian reads again only when asked.
     if (typeof this.leaf.updateHeader === 'function') this.leaf.updateHeader()
   }
@@ -1963,27 +1957,30 @@ class TurnView extends ItemView {
     const { project, change } = shown
     const plugin = this.plugin
 
-    const rails = box.createDiv({ cls: 'rv-rails' })
-    rails.createEl('span', { cls: 'rv-rails-label', text: 'Guardrails' })
+    const rails = box.createDiv({ cls: 'rv-g' })
+    rails.createEl('span')
+    rails.createEl('span', { cls: 'rv-glab', text: 'Guardrails' })
+    const chips = rails.createDiv({ cls: 'rv-rails' })
     for (const rail of plugin.settings.guardrails) {
-      const chipEl = rails.createDiv({ cls: `rv-rail${rail.on ? ' is-on' : ''}` })
-      const toggle = chipEl.createEl('button', { cls: 'rv-rail-toggle', text: `${rail.on ? '✓' : '+'} ${rail.text}`, attr: { 'aria-pressed': String(rail.on), title: rail.on ? 'On: sent with every message. Click to turn off.' : 'Off. Click to send it with every message.' } })
-      toggle.addEventListener('click', async () => {
+      const chipEl = chips.createEl('button', { cls: `rv-rail${rail.on ? ' is-on' : ''}`, attr: { role: 'switch', 'aria-checked': String(rail.on), title: rail.on ? 'On: sent with every message. Click to turn off.' : 'Off. Click to send it with every message.' } })
+      setIcon(chipEl.createEl('span', { cls: 'rv-rail-mark' }), rail.on ? 'check' : 'plus')
+      chipEl.createEl('span', { text: rail.text })
+      chipEl.addEventListener('click', async () => {
         rail.on = !rail.on
         await plugin.saveSettings(false)
         this.renderGuide(true)
       })
-      const remove = chipEl.createEl('button', { cls: 'rv-rail-remove', text: '×', attr: { 'aria-label': `Remove the guardrail "${rail.text}"` } })
+      const remove = chips.createEl('button', { cls: 'rv-rail-remove', text: '×', attr: { 'aria-label': `Remove the guardrail "${rail.text}"` } })
       remove.addEventListener('click', async () => {
         plugin.settings.guardrails = plugin.settings.guardrails.filter(g => g !== rail)
         await plugin.saveSettings(false)
         this.renderGuide(true)
       })
     }
-    const add = rails.createEl('button', { cls: 'rv-link', text: '+ Add' })
+    const add = chips.createEl('button', { cls: 'rv-link', text: '+ Add' })
     add.addEventListener('click', () => {
       add.remove()
-      const input = rails.createEl('input', { cls: 'rv-rail-input', attr: { type: 'text', placeholder: 'e.g. Keep functions small', 'aria-label': 'New guardrail' } })
+      const input = chips.createEl('input', { cls: 'rv-rail-input', attr: { type: 'text', placeholder: 'e.g. Keep functions small', 'aria-label': 'New guardrail' } })
       input.focus()
       input.addEventListener('keydown', async event => {
         if (event.key === 'Escape') return this.renderGuide(true)
@@ -1995,63 +1992,73 @@ class TurnView extends ItemView {
       input.addEventListener('blur', () => window.setTimeout(() => this.renderGuide(true), 150))
     })
 
-    const row = box.createDiv({ cls: 'rv-guide-row' })
-    const text = row.createEl('textarea', { attr: { id: 'rv-steer-text', rows: '2', 'aria-label': 'Message to Claude', placeholder: 'Tell Claude what to fix, keep, or know next. "Guide Claude ›" on a flag fills this in.' } })
+    const row = box.createDiv({ cls: 'rv-g rv-guide-row' })
+    row.createEl('span')
+    row.createEl('span', { cls: 'rv-glab', text: 'Tell Claude' })
+    const field = row.createDiv({ cls: 'rv-guide-field' })
+    const text = field.createEl('textarea', { attr: { id: 'rv-steer-text', rows: '1', 'aria-label': 'Message to Claude', placeholder: 'Tell Claude what to fix, keep, or know next…' } })
     text.value = plugin.draft
     text.addEventListener('input', () => (plugin.draft = text.value))
     const canResume = !!change.sessionId
     const steering = plugin.steering && plugin.steering.changeId === change.id ? plugin.steering : null
     const isRunning = !!plugin.steering && plugin.steering.state === 'running'
+    const sendNow = async () => {
+      if (await plugin.steer(project.root, change, text.value)) plugin.draft = ''
+      this.renderGuide(true)
+    }
     if (canResume) {
-      const send = row.createEl('button', { cls: 'mod-cta', text: isRunning ? 'Claude is working…' : 'Send to Claude' })
+      const send = field.createEl('button', { cls: 'rv-btn-primary', text: isRunning ? 'Claude is working…' : 'Send to Claude' })
       send.disabled = isRunning
-      send.addEventListener('click', async () => {
-        if (await plugin.steer(project.root, change, text.value)) plugin.draft = ''
-        this.renderGuide(true)
+      send.addEventListener('click', sendNow)
+      text.addEventListener('keydown', event => {
+        if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !isRunning) sendNow()
       })
     }
-    const copy = row.createEl('button', { text: 'Copy' })
+    const copy = field.createEl('button', { cls: 'rv-btn', text: 'Copy' })
     copy.addEventListener('click', () => plugin.copySteer(change, text.value))
 
-    const note = box.createDiv({ cls: 'rv-steer-note' })
-    if (steering && steering.state === 'running') note.setText('Claude is working on it. Its edits show up here as the files change.')
-    else if (steering && steering.state === 'done') note.setText(`Done. Claude replied: ${steering.reply.slice(0, 280) || '(no text)'}`)
-    else if (steering && steering.state === 'failed') note.createEl('span', { cls: 'rv-review-error', text: `Not sent: ${steering.reason}` })
-    else
-      note.setText(
-        canResume
-          ? 'Send continues the Claude Code conversation behind these changes, in the background, with the guardrails that are on. Claude can edit files; shell commands it asks for are refused.'
-          : 'No Claude Code conversation is behind these changes, so Copy puts the message and guardrails on the clipboard to paste into Claude Code.',
-      )
+    const note = box.createDiv({ cls: 'rv-g' })
+    note.createEl('span')
+    note.createEl('span')
+    const words = note.createDiv({ cls: 'rv-guide-note' })
+    if (steering && steering.state === 'running') words.createEl('span', { text: 'Claude is working on it. Its edits show up here as the files change.' })
+    else if (steering && steering.state === 'done') words.createEl('span', { text: `Done. Claude replied: ${steering.reply.slice(0, 280) || '(no text)'}` })
+    else if (steering && steering.state === 'failed') words.createEl('span', { cls: 'rv-error', text: `Not sent: ${steering.reason}` })
+    else {
+      words.createEl('span', { text: canResume ? 'Continues the Claude Code conversation behind these changes, with the guardrails that are on.' : 'No conversation is behind these changes: Copy puts the message and guardrails on the clipboard for Claude Code.' })
+      if (canResume) words.createEl('span', { cls: 'rv-kbd', text: `${process.platform === 'darwin' ? '⌘' : 'Ctrl'} Return to send` })
+    }
   }
 }
 
-/** The review's state beside the heading: who reviewed it and Review again, a Review button, or the review running. */
+/** The review's state beside the heading: a status dot and who reviewed it, then Review again or Review. */
 function reviewLine(parent, project, change, plugin) {
   const review = change.review || {}
   const model = plugin.modelLabel()
-  const line = parent.createDiv({ cls: 'rv-reviewed-by' })
+  const line = parent.createDiv({ cls: 'rv-reviewed' })
   if (change.files.length === 0) return
-  // With a changed file selected, among several, the review can cover that file alone.
   const picked = change.files.length > 1 && change.files.some(f => f.path === plugin.focus) ? plugin.focus : null
   const own = picked ? plugin.reviews[reviewKey(change.id, picked)] : null
-  if (review.state === 'pending') line.createEl('span', { text: `Reviewing all ${change.files.length} files with ${model}…` })
-  else if (review.state === 'done') line.createEl('span', { text: `Reviewed by ${review.by} · ${relativeTime(review.reviewedAt)}` })
-  if (picked) {
-    if (own && own.state === 'pending') line.createEl('span', { text: `Reviewing ${path.basename(picked)}…` })
-    else {
-      const one = line.createEl('button', { cls: 'mod-cta', text: `Review ${path.basename(picked)} only` })
-      one.addEventListener('click', () => plugin.startReview(project.root, change.id, picked))
-    }
-    if (review.state !== 'pending') {
-      const all = line.createEl('button', { cls: 'rv-link', text: `Review all ${change.files.length} files` })
-      all.addEventListener('click', () => plugin.startReview(project.root, change.id))
-    }
-    return
+  const status = line.createEl('span', { cls: 'rv-status', attr: { role: 'status' } })
+  if (review.state === 'pending' || (own && own.state === 'pending')) {
+    status.createEl('span', { cls: 'rv-dot is-busy' })
+    status.createEl('span', { text: own && own.state === 'pending' ? `Reviewing ${path.basename(picked)} with ${model}…` : `Reviewing with ${model}…` })
+  } else if (review.state === 'done') {
+    status.createEl('span', { cls: 'rv-dot is-ok' })
+    status.createEl('span', { text: `Reviewed by ${review.by} · ${relativeTime(review.reviewedAt)}` })
+  } else if (review.state === 'failed') {
+    status.createEl('span', { cls: 'rv-dot is-bad' })
+    status.createEl('span', { text: 'The review did not finish' })
   }
   if (review.state === 'pending') return
-  const button = line.createEl('button', { cls: review.state === 'done' ? '' : 'mod-cta', text: review.state === 'done' ? 'Review again' : review.state === 'failed' ? 'Try again' : `Review with ${model}` })
-  button.addEventListener('click', () => plugin.startReview(project.root, change.id))
+  const button = line.createEl('button', { cls: review.state === 'done' ? 'rv-btn' : 'rv-btn rv-btn-accent' })
+  setIcon(button.createEl('span', { cls: 'rv-btn-icon' }), 'refresh-cw')
+  button.createEl('span', { text: picked ? `Review ${path.basename(picked)}` : review.state === 'done' ? 'Review again' : review.state === 'failed' ? 'Try again' : `Review with ${model}` })
+  button.addEventListener('click', () => plugin.startReview(project.root, change.id, picked))
+  if (picked && review.state !== 'pending') {
+    const all = line.createEl('button', { cls: 'rv-link', text: `all ${change.files.length} files` })
+    all.addEventListener('click', () => plugin.startReview(project.root, change.id))
+  }
 }
 
 function renderChange(el, shown, plugin) {
@@ -2068,18 +2075,24 @@ function renderChange(el, shown, plugin) {
     return
   }
   const review = change.review || {}
-  const result = resultOf(review)
 
   const head = el.createDiv({ cls: 'rv-head' })
-  head.createEl('span', { cls: 'rv-crumb rv-mono', text: change.isWorktree ? `${name} · ${project.git.branch} · changes since your last commit` : `${name} · ${change.label} · ${relativeTime(change.item.finishedAt)}` })
+  const crumb = head.createEl('span', { cls: 'rv-crumb' })
+  crumb.createEl('span', { cls: 'rv-crumb-name', text: name })
+  crumb.createEl('span', { cls: 'rv-crumb-sep', text: '·' })
+  crumb.createEl('span', { cls: 'rv-mono', text: change.isWorktree ? project.git.branch : change.label })
+  crumb.createEl('span', { cls: 'rv-crumb-sep', text: '·' })
+  crumb.createEl('span', { text: change.isWorktree ? 'changes since your last commit' : relativeTime(change.item.finishedAt) })
   reviewLine(head, project, change, plugin)
-  el.createEl('h1', { cls: 'rv-title', text: 'What Claude changed, and why' })
+
+  const titleRow = el.createDiv({ cls: 'rv-title-row' })
+  titleRow.createEl('h1', { cls: 'rv-title', text: 'What Claude changed, and why' })
   if (change.files.length === 0) {
-    el.createEl('p', { cls: 'rv-sub', text: 'Nothing is uncommitted. As Claude edits files here, the changes show up in this view, file by file.' })
+    el.createEl('p', { cls: 'rv-sub', text: 'Nothing is uncommitted. As Claude edits files here, the changes show up in this view.' })
     return
   }
   const byRequest = plugin.viewMode !== 'file'
-  const modes = el.createDiv({ cls: 'rv-seg rv-view-modes', attr: { role: 'group', 'aria-label': 'Show changes' } })
+  const modes = titleRow.createDiv({ cls: 'rv-seg', attr: { role: 'group', 'aria-label': 'Show changes' } })
   for (const [id, label] of [['request', 'By request'], ['file', 'By file']]) {
     const isOn = (id === 'request') === byRequest
     const button = modes.createEl('button', { cls: isOn ? 'is-active' : '', text: label, attr: { 'aria-pressed': String(isOn) } })
@@ -2088,437 +2101,397 @@ function renderChange(el, shown, plugin) {
       plugin.refresh([TURN_VIEW])
     })
   }
-  el.createEl('p', { cls: 'rv-sub', text: byRequest ? 'Each thing you asked, what it meant, and the changes it led to. Anything Claude did on its own is set apart at the end.' : 'Read top to bottom: the files are in the order they build on each other, starting with the piece the others use.' })
+  el.createEl('p', { cls: 'rv-sub', text: byRequest ? 'Each thing you asked, what it meant, and the changes it led to. Anything Claude did on its own comes first.' : 'The same changes, one file at a time, in the order they build on each other. Open a file to see what changed in it, with the code.' })
   if (review.state === 'failed') el.createDiv({ cls: 'rv-callout rv-red', text: `The review did not finish: ${review.reason}` })
   if (change.isStale) el.createDiv({ cls: 'rv-callout rv-orange', text: 'The files changed after this review, so some notes may be out of date. Review again to catch up.' })
 
   const map = plugin.mapFor(change)
   const edges = map ? map.edges : []
   const order = buildOrder(change.files.map(f => f.path), edges)
-  const shownPaths = new Set(order)
-  // Changed files linked by imports to another changed file; buildOrder puts the rest after them.
-  const linked = new Set(edges.filter(e => shownPaths.has(e.from) && shownPaths.has(e.to)).flatMap(e => [e.from, e.to]))
-
-  if (byRequest) {
-    renderByRequest(el, { change, order, project, plugin })
-    renderAffected(el, map, shownPaths, plugin)
-    return
-  }
-  renderRequest(el, change, result, plugin)
-  renderApproach(el, change, result, shownPaths, project, plugin)
-
-  const byPath = new Map(change.files.map(f => [f.path, f]))
-  order.forEach((filePath, i) => {
-    const file = byPath.get(filePath)
-    const isOutside = change.outside.includes(filePath) && change.turns.length > 0
-    // A file reviewed on its own draws on that review while it is the newer one.
-    const own = plugin.reviews[reviewKey(change.id, filePath)] || null
-    const chosen = pickReview(change.review, own)
-    const fileResult = chosen === review ? result : resultOf(chosen)
-    const fileInfo = fileResult ? fileResult.files.find(f => f.file === filePath) : undefined
-    const ownState = {
-      isPending: !!own && own.state === 'pending',
-      failed: own && own.state === 'failed' ? own.reason : '',
-      isStale: !!chosen && chosen === own && own.signature !== changeSignature([file]),
-    }
-    renderFileCard(el, { file, step: i + 1, info: fileInfo, isOutside, change, result: fileResult, ownState, map, project, plugin })
-    if (i === order.length - 1) return
-    if (linked.has(filePath) && !linked.has(order[i + 1])) {
-      el.createDiv({ cls: 'rv-also', text: 'Also changed, not linked by imports to the files above' })
-      return
-    }
-    // Closed cards sit close together so every file shows at once; a card's "Then" line shows once it is open.
-    const isOpen = plugin.openCards.has(`${change.id}:${filePath}`)
-    const line = isOpen ? thenLine(fileInfo, filePath, order[i + 1], edges, linked) : ''
-    const then = el.createDiv({ cls: `rv-then${line ? '' : ' is-quiet'}` })
-    if (line) {
-      then.createEl('span', { cls: 'rv-then-label', text: 'Then ↓' })
-      then.createEl('span', { text: line })
-    }
-  })
-
-  renderAffected(el, map, shownPaths, plugin)
+  const entries = changesByFile(change, order, plugin)
+  const view = { project, change, map, order, entries, plugin }
+  if (byRequest) renderByRequest(el, view)
+  else renderByFile(el, view)
+  renderAffected(el, map, new Set(order), plugin)
 }
 
-/**
- * Every change of every file, each with the review it came from: the file's own review or the whole change's,
- * whichever finished last, as the file cards use.
- */
-function changesByFile(change, order, plugin) {
-  const all = []
-  for (const filePath of order) {
+/** The tick on a change: "Looks good" marks it reviewed; a request whose changes are all ticked folds itself. */
+function tick(parent, key, plugin) {
+  const on = plugin.checked.has(key)
+  const button = parent.createEl('button', { cls: 'rv-tick', attr: { 'aria-pressed': String(on), 'aria-label': on ? 'Checked. Click to uncheck' : 'Looks good', title: on ? 'Checked. Click to uncheck' : 'Looks good' } })
+  setIcon(button, 'check')
+  button.addEventListener('click', event => {
+    event.stopPropagation()
+    if (on) plugin.checked.delete(key)
+    else {
+      plugin.checked.add(key)
+      if (plugin.activeChange === key) plugin.activeChange = null
+    }
+    plugin.refresh([TURN_VIEW])
+  })
+}
+
+/** One change as a row: fit tag, title, file and lines, a chevron, and a tick; open, its Changed / Why and actions. */
+function changeRow(parent, entry, view, { showFile = true } = {}) {
+  const { plugin, change } = view
+  const { c, key } = entry
+  const checked = plugin.checked.has(key)
+  const on = plugin.activeChange === key
+  const wrap = parent.createDiv({ cls: `rv-row${on ? ' is-on' : ''}${checked ? ' is-checked' : ''}` })
+  const button = wrap.createEl('button', { cls: 'rv-row-btn rv-g4', attr: { 'aria-expanded': String(on) } })
+  const fit = FITS[c.fits]
+  const tag = button.createEl('span', { cls: `rv-tag${fit ? ` rv-${fit[1]}-text` : ''}` })
+  if (fit) {
+    tag.createEl('span', { cls: 'rv-tag-dot' })
+    tag.createEl('span', { text: fit[0] })
+  }
+  button.createEl('span', { cls: 'rv-row-title rv-ell', text: c.title })
+  const where = button.createEl('span', { cls: 'rv-mono rv-row-where' })
+  if (showFile) where.createEl('span', { text: path.basename(entry.file) })
+  where.createEl('span', { cls: 'rv-row-lines', text: c.from === c.to ? String(c.from) : `${c.from}–${c.to}` })
+  setIcon(button.createEl('span', { cls: `rv-chevron${on ? ' is-open' : ''}` }), 'chevron-right')
+  button.addEventListener('click', () => {
+    plugin.activeChange = on ? null : key
+    plugin.focus = entry.file
+    plugin.refresh([TURN_VIEW, SIDE_VIEW])
+  })
+  tick(wrap, key, plugin)
+  if (!on) return wrap
+
+  const open = wrap.createDiv({ cls: 'rv-row-open rv-g2' })
+  const line = (label, cls) => {
+    open.createEl('span', { cls: 'rv-glab', text: label })
+    return open.createEl('span', { cls: cls || 'rv-body' })
+  }
+  if (c.before && c.now) {
+    const value = line('Changed')
+    value.createEl('span', { cls: 'rv-muted', text: c.before })
+    value.createEl('span', { cls: 'rv-arrow', text: '→' })
+    value.createEl('span', { text: c.now })
+  } else if (c.what) line('Changed').setText(c.what)
+  if (c.why) line('Why').setText(c.why)
+  if (c.fits === 'further' && c.serves) {
+    open.createEl('span')
+    open.createEl('span', { cls: 'rv-cap rv-orange-text', text: `Goes beyond what you asked: ${c.serves}` })
+  }
+  open.createEl('span')
+  const actions = open.createDiv({ cls: 'rv-actions' })
+  const ask = actions.createEl('button', { cls: 'rv-link', text: c.fits === 'yes' ? 'Ask Claude about this ›' : 'Ask Claude to undo ›' })
+  ask.addEventListener('click', () => plugin.draftSteer(c.fits === 'yes' ? `About "${c.title}" (${entry.file}, ${lineWord(c)}): ` : `Please undo "${c.title}" in ${entry.file} (${lineWord(c)}). I didn't ask for it.`))
+  const code = actions.createEl('button', { cls: 'rv-link rv-link-quiet', text: 'See the code ›' })
+  code.addEventListener('click', () => plugin.showChange(entry.file, key))
+  return wrap
+}
+
+/** The main view by request: at a glance, what nobody asked for, then each request newest first with exceptions first. */
+function renderByRequest(el, view) {
+  const { change, entries, plugin } = view
+  const { groups, extras } = groupByRequest(change.asks, entries)
+  if (change.asks.length === 0) {
+    el.createDiv({ cls: 'rv-callout rv-muted', text: change.isWorktree ? 'No Claude Code request led to these changes, so there is nothing to group them by. See them by file.' : 'No Claude Code request is on record for this commit. See its changes by file.' })
+    return
+  }
+  const matched = entries.filter(e => e.c.fits === 'yes').length
+  const further = entries.filter(e => e.c.fits === 'further').length
+  const checked = entries.filter(e => plugin.checked.has(e.key)).length
+
+  // At a glance: counts, a fit meter, and the review's progress.
+  const glance = el.createDiv({ cls: 'rv-g rv-glance' })
+  glance.createEl('span')
+  glance.createEl('span', { cls: 'rv-glab', text: 'At a glance' })
+  const facts = glance.createDiv({ cls: 'rv-glance-facts' })
+  facts.createEl('span', { cls: 'rv-b5', text: `${change.asks.length} ${change.asks.length === 1 ? 'request' : 'requests'} · ${entries.length} ${entries.length === 1 ? 'change' : 'changes'}` })
+  if (entries.length) {
+    meter(facts, [[matched, 'green'], [further, 'orange'], [extras.length, 'purple']])
+    const parts = facts.createEl('span', { cls: 'rv-cap rv-muted' })
+    parts.createEl('span', { text: [matched ? `${matched} match` : '', further ? `${further} ${FITS.further[0]}` : ''].filter(Boolean).join(' · ') })
+    if (extras.length) {
+      const jump = parts.createEl('button', { cls: 'rv-link rv-link-cap', text: `${matched || further ? ' · ' : ''}${extras.length} not asked for ›` })
+      jump.addEventListener('click', () => el.querySelector('.rv-extras')?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
+    }
+    facts.createEl('span', { cls: `rv-cap rv-glance-progress${checked === entries.length ? ' is-done' : ''}`, text: checked === 0 ? 'Tick each change as you go' : checked === entries.length ? 'All checked' : `${checked} of ${entries.length} checked` })
+  } else if (!change.review || change.review.state !== 'done') facts.createEl('span', { cls: 'rv-cap rv-muted', text: 'Review these changes to see which request each came from.' })
+
+  if (extras.length) {
+    const section = el.createDiv({ cls: 'rv-req rv-extras' })
+    const top = section.createDiv({ cls: 'rv-req-head rv-req-head-extra' })
+    setIcon(top.createEl('span', { cls: 'rv-req-badge is-extra' }), 'sparkles')
+    const words = top.createDiv({ cls: 'rv-req-words is-inline' })
+    words.createEl('span', { cls: 'rv-lab rv-purple-text', text: 'Not from anything you asked' })
+    words.createEl('span', { cls: 'rv-cap rv-muted', text: 'Changes Claude made on its own · check these first' })
+    const list = section.createDiv({ cls: 'rv-req-list' })
+    for (const entry of extras) changeRow(list, entry, view)
+  }
+
+  groups.forEach(group => {
+    const groupKey = `${change.id}:ask:${group.n}`
+    const total = group.changes.length
+    const done = group.changes.filter(e => plugin.checked.has(e.key)).length
+    const allChecked = total > 0 && done === total
+    // The newest request starts open; a fully checked request folds itself, and its header reopens it.
+    const stored = plugin.openRequests.get(groupKey)
+    const first = groups.find(g => g.changes.length) || groups[0]
+    const open = stored !== undefined ? stored : !allChecked && total > 0 && group === first
+    const section = el.createDiv({ cls: `rv-req${open ? ' is-open' : ''}` })
+    const head = section.createEl('button', { cls: 'rv-g rv-req-head rv-req-toggle', attr: { 'aria-expanded': String(open) } })
+    const badge = head.createEl('span', { cls: `rv-req-badge${allChecked ? ' is-done' : group === groups[0] ? ' is-newest' : ''}` })
+    if (allChecked) setIcon(badge, 'check')
+    else badge.setText(`R${group.n}`)
+    const words = head.createDiv({ cls: 'rv-req-words' })
+    words.createEl('span', { cls: 'rv-head', text: group.meaning || group.ask.text })
+    if (group.meaning) words.createEl('span', { cls: 'rv-cap rv-muted', text: group.ask.answered ? `You said "${group.ask.text}", answering "${group.ask.answered}"` : `You said "${group.ask.text}"` })
+    const side = head.createDiv({ cls: 'rv-req-side' })
+    const gm = group.changes.filter(e => e.c.fits === 'yes').length
+    const gf = group.changes.filter(e => e.c.fits === 'further').length
+    if (total) {
+      const verdict = side.createDiv({ cls: 'rv-req-verdict' })
+      meter(verdict, [[gm, 'green'], [gf, 'orange']])
+      verdict.createEl('span', { cls: 'rv-cap rv-muted', text: gf ? `${gm} match · ${gf} ${FITS.further[0]}` : total === 1 ? 'matches' : `all ${gm} match` })
+    } else side.createEl('span', { cls: 'rv-cap rv-muted', text: 'no code changes' })
+    side.createEl('span', { cls: `rv-cap${allChecked ? ' rv-green-text' : ' rv-faint'}`, text: [allChecked ? `all ${total} checked` : done ? `${done} of ${total} checked` : '', group.ask.at ? relativeTime(group.ask.at) : ''].filter(Boolean).join(' · ') })
+    setIcon(head.createEl('span', { cls: `rv-chevron${open ? ' is-open' : ''}` }), 'chevron-right')
+    head.addEventListener('click', () => {
+      plugin.openRequests.set(groupKey, !open)
+      plugin.refresh([TURN_VIEW])
+    })
+    if (!open) return
+    const list = section.createDiv({ cls: 'rv-req-list' })
+    if (total === 0) {
+      list.createDiv({ cls: 'rv-body rv-muted', text: entries.length ? 'No change in these files came from this.' : 'Review these changes to see what this led to.' })
+      return
+    }
+    // Exceptions first: what goes further than asked shows open; what matches folds into one line.
+    const look = group.changes.filter(e => e.c.fits !== 'yes')
+    const matches = group.changes.filter(e => e.c.fits === 'yes')
+    if (look.length) {
+      list.createDiv({ cls: 'rv-cap rv-orange-text rv-req-lookline', text: look.length === 1 ? 'Needs a look · 1 goes further than you asked' : `Needs a look · ${look.length} go further than you asked` })
+      for (const entry of look) changeRow(list, entry, view)
+    }
+    if (matches.length) {
+      const matchKey = `${groupKey}:matches`
+      const matchesOpen = plugin.openRequests.get(matchKey) === true
+      const perFile = new Map()
+      for (const e of matches) perFile.set(path.basename(e.file), (perFile.get(path.basename(e.file)) || 0) + 1)
+      const fold = list.createDiv({ cls: `rv-row rv-row-fold${matchesOpen ? ' is-on' : ''}` })
+      const button = fold.createEl('button', { cls: 'rv-row-btn rv-g4', attr: { 'aria-expanded': String(matchesOpen) } })
+      const tag = button.createEl('span', { cls: 'rv-tag rv-green-text' })
+      tag.createEl('span', { cls: 'rv-tag-dot' })
+      tag.createEl('span', { text: 'matches' })
+      button.createEl('span', { cls: 'rv-row-title rv-b5 rv-muted', text: matches.length === 1 ? '1 change matches what you asked' : `${matches.length} changes match what you asked` })
+      button.createEl('span', { cls: 'rv-mono rv-row-where rv-faint', text: [...perFile].map(([f, n]) => `${f} ${n}`).join(' · ') })
+      setIcon(button.createEl('span', { cls: `rv-chevron${matchesOpen ? ' is-open' : ''}` }), 'chevron-right')
+      button.addEventListener('click', () => {
+        plugin.openRequests.set(matchKey, !matchesOpen)
+        plugin.refresh([TURN_VIEW])
+      })
+      if (matchesOpen) {
+        const inner = fold.createDiv({ cls: 'rv-row-inner' })
+        for (const entry of matches) changeRow(inner, entry, view)
+      }
+    }
+  })
+}
+
+/** A small bar split by count: [[n, tone], …]. */
+function meter(parent, parts) {
+  const bar = parent.createEl('span', { cls: 'rv-meter', attr: { 'aria-hidden': 'true' } })
+  for (const [n, tone] of parts) if (n) bar.createEl('span', { cls: `rv-meter-${tone}`, attr: { style: `flex: ${n}` } })
+}
+
+/** The main view by file: a table of files; an open file shows what Claude did, then each change with its code. */
+function renderByFile(el, view) {
+  const { change, entries, order, plugin, project } = view
+  const byPath = new Map(change.files.map(f => [f.path, f]))
+  const edges = view.map ? view.map.edges : []
+  const shownPaths = new Set(order)
+  const linked = new Set(edges.filter(e => shownPaths.has(e.from) && shownPaths.has(e.to)).flatMap(e => [e.from, e.to]))
+
+  const table = el.createDiv({ cls: 'rv-files' })
+  const header = table.createDiv({ cls: 'rv-gf rv-files-head' })
+  for (const [text, cls] of [['', ''], ['File', ''], ['Status', ''], ['Fit with your requests', ''], ['Add', 'is-num'], ['Del', 'is-num'], ['', '']]) header.createEl('span', { cls: `rv-lab ${cls}`.trim(), text })
+
+  let dividerDrawn = false
+  order.forEach((filePath, i) => {
+    const file = byPath.get(filePath)
+    if (!dividerDrawn && linked.size && !linked.has(filePath) && order.some(p => linked.has(p))) {
+      dividerDrawn = true
+      const divider = table.createDiv({ cls: 'rv-files-divider' })
+      divider.createEl('span', { cls: 'rv-lab', text: 'Also changed, not linked by imports' })
+      divider.createEl('span', { cls: 'rv-files-divider-line' })
+    }
+    const key = `${change.id}:${filePath}`
+    const isOpen = plugin.openCards.has(key)
     const own = plugin.reviews[reviewKey(change.id, filePath)] || null
     const chosen = pickReview(change.review, own)
     const result = resultOf(chosen)
     const info = result ? result.files.find(f => f.file === filePath) : null
-    for (const [k, c] of ((info && info.changes) || []).entries()) all.push({ file: filePath, k, c, review: chosen, result })
-  }
-  return all
-}
+    const fileEntries = entries.filter(e => e.file === filePath)
+    const m = fileEntries.filter(e => e.c.fits === 'yes').length
+    const f = fileEntries.filter(e => e.c.fits === 'further').length
+    const x = fileEntries.filter(e => e.c.fits === 'no').length
+    const kind = CHANGE_LABELS[file.change] || ['Changed', 'muted']
+    const mark = MAP_MARKS[file.change === 'new' ? 'new' : file.change === 'deleted' ? 'deleted' : 'edited']
 
-/**
- * The changes grouped under the request they came from. A change names its request by number in the list its
- * review was given (kept with the review), so a request that arrived later does not shift it; one that names
- * no request, or that nobody asked for, goes to `extras`.
- */
-function groupByRequest(asks, entries) {
-  const groups = asks.map(ask => ({ ask, meaning: '', changes: [] }))
-  const extras = []
-  for (const entry of entries) {
-    const { c, review, result } = entry
-    const texts = (review && review.requests) || asks.map(a => a.text)
-    const text = c.ask ? texts[c.ask - 1] : null
-    const group = text ? groups.find(g => g.ask.text === text) : null
-    if (!group || c.fits === 'no') {
-      extras.push(entry)
-      continue
-    }
-    group.changes.push(entry)
-    const meant = result && result.asks.find(a => a.n === c.ask)
-    if (meant && !group.meaning) group.meaning = meant.meaning
-  }
-  return { groups, extras }
-}
-
-/** The main view by request: each thing asked, what it meant, and the changes it led to; then what nobody asked for. */
-function renderByRequest(el, { change, order, project, plugin }) {
-  const entries = changesByFile(change, order, plugin)
-  const { groups, extras } = groupByRequest(change.asks, entries)
-  if (change.asks.length === 0) {
-    el.createDiv({ cls: 'rv-card rv-muted', text: change.isWorktree ? 'No Claude Code request led to these changes, so there is nothing to group them by. See them By file.' : 'No Claude Code request is on record for this commit. See its changes By file.' })
-    return
-  }
-  if (entries.length === 0) el.createDiv({ cls: 'rv-callout rv-muted', text: 'Review these changes to see which request each change came from.' })
-
-  const openChange = entry => {
-    const key = `${change.id}:${entry.file}`
-    plugin.viewMode = 'file'
-    plugin.openCards.add(key)
-    plugin.toggledCode.add(key)
-    plugin.activeChange = `${key}:${entry.k}`
-    plugin.focus = entry.file
-    plugin.refresh([TURN_VIEW, SIDE_VIEW])
-    const target = [...document.querySelectorAll('.rv-change-head')].find(e => e.dataset.key === plugin.activeChange) || [...document.querySelectorAll('.rv-file')].find(e => e.dataset.path === entry.file)
-    if (target) target.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  }
-  const changeRow = (parent, entry) => {
-    const { c } = entry
-    const row = parent.createEl('button', { cls: `rv-req-change${c.fits === 'no' ? ' is-extra' : ''}`, attr: { title: 'Open this change in its file' } })
-    if (c.fits) chip(row, FITS[c.fits][0], FITS[c.fits][1])
-    const words = row.createDiv({ cls: 'rv-change-words' })
-    const top = words.createDiv({ cls: 'rv-change-top' })
-    top.createEl('span', { cls: 'rv-change-title', text: c.title })
-    top.createEl('span', { cls: 'rv-mono rv-req-file', text: path.basename(entry.file) })
-    top.createEl('span', { cls: 'rv-mono rv-change-lines', text: c.from === c.to ? `line ${c.from}` : `lines ${c.from}–${c.to}` })
-    if (c.before && c.now) {
-      const line = words.createDiv({ cls: 'rv-change-value' })
-      line.createEl('span', { cls: 'rv-change-before', text: c.before })
-      line.createEl('span', { text: ` → ${c.now}` })
-    } else if (c.what) words.createDiv({ cls: 'rv-change-value', text: c.what })
-    if (c.why) whyLine(words, c.why)
-    if (c.fits === 'further' && c.serves) words.createDiv({ cls: 'rv-req-note', text: `Goes beyond what you asked: ${c.serves}` })
-    row.addEventListener('click', () => openChange(entry))
-    return row
-  }
-
-  groups.forEach((group, i) => {
-    const section = el.createDiv({ cls: 'rv-req' })
-    const head = section.createDiv({ cls: 'rv-req-head' })
-    const top = head.createDiv({ cls: 'rv-req-top' })
-    top.createEl('span', { cls: 'rv-req-id', text: `R${i + 1}` })
-    top.createEl('span', { cls: 'rv-req-label', text: 'From the conversation' })
-    if (group.ask.at) top.createEl('span', { cls: 'rv-muted', text: relativeTime(group.ask.at) })
-    const matched = group.changes.filter(e => e.c.fits === 'yes').length
-    const further = group.changes.filter(e => e.c.fits === 'further').length
-    if (group.changes.length) {
-      const verdict = further ? `${matched} match · ${further} ${FITS.further[0]}` : `all ${matched} match`
-      chip(top, group.changes.length === 1 && !further ? 'matches' : verdict, further ? 'orange' : 'green').addClass('rv-push')
-    }
-    const exchange = (who, text, cls) => {
-      const line = head.createDiv({ cls: `rv-req-line ${cls}` })
-      line.createEl('span', { cls: 'rv-ask-who', text: who })
-      line.createEl('span', { text })
-    }
-    if (group.ask.answered) exchange('Claude asked', group.ask.answered, 'is-asked')
-    exchange('You said', group.ask.text, 'is-said')
-    if (group.meaning) exchange('Meaning', group.meaning, 'is-meaning')
-
-    const list = section.createDiv({ cls: 'rv-req-changes' })
-    if (group.changes.length === 0) list.createDiv({ cls: 'rv-muted', text: entries.length ? 'No change in these files came from this.' : '' })
-    else list.createDiv({ cls: 'rv-req-count', text: group.changes.length === 1 ? '1 change it led to' : `${group.changes.length} changes it led to` })
-    for (const entry of group.changes) changeRow(list, entry)
-  })
-
-  if (extras.length) {
-    const section = el.createDiv({ cls: 'rv-req is-extra' })
-    const head = section.createDiv({ cls: 'rv-req-head' })
-    const top = head.createDiv({ cls: 'rv-req-top' })
-    top.createEl('span', { cls: 'rv-req-label', text: 'Not from anything you asked' })
-    top.createEl('span', { cls: 'rv-muted', text: 'changes Claude made on its own · check these first' })
-    const list = section.createDiv({ cls: 'rv-req-changes' })
-    for (const entry of extras) {
-      changeRow(list, entry)
-      const undo = list.createEl('button', { cls: 'rv-link rv-req-undo', text: 'Ask Claude to undo ›' })
-      undo.addEventListener('click', () => plugin.draftSteer(`Undo "${entry.c.title}" in ${entry.file}: I did not ask for it.`))
-    }
-  }
-}
-
-/** "You asked": the person's requests behind these changes, how each part went, and the gaps to send back. */
-function renderRequest(el, change, result, plugin) {
-  const card = el.createDiv({ cls: 'rv-card' })
-  const cardHead = card.createDiv({ cls: 'rv-card-hd' })
-  const asks = change.asks
-  sectionTitle(cardHead, asks.length ? 'You asked' : change.isWorktree ? 'Your request' : 'Commit message')
-  if (asks.length > 1) cardHead.createEl('span', { cls: 'rv-muted', text: `${asks.length} requests since your last commit, newest last` })
-  if (asks.length) {
-    const hidden = asks.length - 3
-    if (hidden > 0) card.createDiv({ cls: 'rv-muted', text: `and ${hidden} earlier` })
-    asks.slice(-3).forEach((ask, i, shown) => {
-      const item = card.createDiv({ cls: `rv-ask${i < shown.length - 1 ? ' is-older' : ''}` })
-      // A short reply shows the question it answered, so "Yes, build it" says what was built.
-      if (ask.answered) {
-        const asked = item.createDiv({ cls: 'rv-ask-question' })
-        asked.createEl('span', { cls: 'rv-ask-who', text: 'Claude asked' })
-        asked.createEl('span', { text: ask.answered })
-      }
-      const said = item.createDiv({ cls: 'rv-ask-reply' })
-      if (ask.answered) said.createEl('span', { cls: 'rv-ask-who', text: 'You' })
-      said.createEl('span', { cls: 'rv-request', text: ask.text })
+    const section = table.createDiv({ cls: `rv-file${isOpen ? ' is-open' : ''}${plugin.focus === filePath ? ' is-focus' : ''}` })
+    section.dataset.path = filePath
+    const row = section.createEl('button', { cls: 'rv-gf rv-file-row', attr: { 'aria-expanded': String(isOpen) } })
+    row.createEl('span', { cls: 'rv-cap rv-faint', text: String(i + 1) })
+    const name = row.createEl('span', { cls: 'rv-mono rv-ell' })
+    const slash = filePath.lastIndexOf('/')
+    if (slash > 0) name.createEl('span', { cls: 'rv-faint', text: filePath.slice(0, slash + 1) })
+    name.createEl('span', { text: filePath.slice(slash + 1) })
+    const status = row.createEl('span', { cls: 'rv-cap rv-file-status' })
+    status.createEl('span', { cls: `rv-mono rv-file-mark rv-${mark.tone}-text`, text: mark.letter })
+    status.createEl('span', { text: kind[0] })
+    const fit = row.createEl('span', { cls: 'rv-cap rv-file-fit' })
+    if (fileEntries.length) {
+      meter(fit, [[m, 'green'], [f, 'orange'], [x, 'purple']])
+      fit.createEl('span', { text: [m ? `${m} match` : '', f ? `${f} ${FITS.further[0]}` : '', x ? `${x} ${FITS.no[0]}` : ''].filter(Boolean).join(' · ') })
+    } else fit.createEl('span', { cls: 'rv-faint', text: result ? 'no notes' : 'not reviewed' })
+    row.createEl('span', { cls: 'rv-mono rv-num rv-green-text', text: `+${file.added}` })
+    row.createEl('span', { cls: 'rv-mono rv-num rv-red-text', text: `−${file.removed}` })
+    setIcon(row.createEl('span', { cls: `rv-chevron${isOpen ? ' is-open' : ''}` }), 'chevron-right')
+    row.addEventListener('click', () => {
+      if (isOpen) plugin.openCards.delete(key)
+      else plugin.openCards.add(key)
+      plugin.focus = filePath
+      plugin.refresh([TURN_VIEW, SIDE_VIEW])
     })
-  } else if (change.isWorktree) {
-    card.createEl('p', { cls: 'rv-muted', text: 'No Claude Code request edited these files since your last commit. They may be your own edits.' })
-  } else {
-    card.createEl('p', { cls: 'rv-request', text: change.message })
-  }
-  if (result) {
-    const chips = card.createDiv({ cls: 'rv-chips' })
-    for (const r of result.requirements) chip(chips, `${r.id} ${r.text} · ${r.status}`, STATUS_TONES[r.status] || 'muted')
-    const extras = result.steps.filter(step => step.kind === 'unrequested').length
-    if (extras) chip(chips, `${extras} not asked for`, 'purple')
-    if (result.violations.length) chip(chips, `${result.violations.length} against a guardrail`, 'red')
-    const gaps = gapsMessage(result)
-    if (gaps) {
-      const send = card.createEl('button', { cls: 'rv-link rv-gaps-link', text: 'Send all the gaps to Claude ›' })
-      send.addEventListener('click', () => plugin.draftSteer(gaps))
+    if (!isOpen) return
+
+    const body = section.createDiv({ cls: 'rv-file-body' })
+    const isOutside = change.outside.includes(filePath) && change.turns.length > 0
+    const lead = body.createDiv({ cls: 'rv-g rv-file-lead' })
+    lead.createEl('span')
+    lead.createEl('span', { cls: 'rv-glab rv-accent-text', text: isOutside ? 'What changed' : 'What Claude did' })
+    const ownState = { pending: !!own && own.state === 'pending', failed: own && own.state === 'failed' ? own.reason : '', stale: !!chosen && chosen === own && own.signature !== changeSignature([file]) }
+    if (info && info.did) lead.createEl('span', { cls: 'rv-head', text: info.did })
+    else if (ownState.pending) lead.createEl('span', { cls: 'rv-body rv-muted', text: `Reviewing this file with ${plugin.modelLabel()}…` })
+    else lead.createEl('span', { cls: 'rv-body rv-muted', text: result ? 'The review left no note on this file.' : 'No review of this file yet.' })
+    const reviewThis = text => {
+      const line = body.createDiv({ cls: 'rv-g' })
+      line.createEl('span')
+      line.createEl('span')
+      const button = line.createEl('button', { cls: 'rv-link', text })
+      button.addEventListener('click', () => {
+        plugin.focus = filePath
+        plugin.startReview(project.root, change.id, filePath)
+      })
     }
-  }
-  if (change.outside.length && change.turns.length) {
-    card.createDiv({ cls: 'rv-muted', text: `No Claude change recorded for ${change.outside.map(p => path.basename(p)).join(', ')}: probably your own edits.` })
-  }
-}
+    if (ownState.failed) {
+      const line = body.createDiv({ cls: 'rv-g' })
+      line.createEl('span')
+      line.createEl('span')
+      line.createEl('span', { cls: 'rv-error', text: `This file's review did not finish: ${ownState.failed}` })
+      reviewThis('Try this file again ›')
+    } else if (ownState.stale) reviewThis('This file changed after its review. Review it again ›')
+    else if (!info && !ownState.pending && change.files.length > 1) reviewThis('Review just this file ›')
 
-/** "How Claude went about it": the reasoning steps that point at no file shown below. */
-function renderApproach(el, change, result, shownPaths, project, plugin) {
-  if (!result) return
-  // Problems first, then the rest in Claude's order; three show until "Show all", so the files stay near the top.
-  const rank = step => (FLAG_STEPS.includes(step.kind) ? 0 : 1)
-  const steps = result.steps.filter(step => !step.evidence.some(e => shownPaths.has(e.file))).sort((a, b) => rank(a) - rank(b))
-  if (steps.length === 0) return
-  const card = el.createDiv({ cls: 'rv-card' })
-  sectionTitle(card, 'How Claude went about it')
-  const allKey = `${change.id}:steps`
-  const isAll = plugin.expanded.has(allKey)
-  for (const step of steps.slice(0, isAll ? Infinity : APPROACH_STEPS)) {
-    const line = card.createDiv({ cls: 'rv-approach' })
-    chip(line, STEP_LABELS[step.kind], STEP_TONES[step.kind] || 'muted')
-    const words = line.createDiv({ cls: 'rv-grow' })
-    words.createEl('span', { cls: 'rv-strong', text: step.title })
-    if (step.why) words.createEl('span', { cls: 'rv-muted', text: ` ${step.why}` })
-    const source = SOURCES[step.source] || SOURCES.none
-    chip(line, source.label, source.tone)
-    const guide = line.createEl('button', { cls: 'rv-link', text: 'Guide Claude ›' })
-    guide.addEventListener('click', () => plugin.draftSteer(`About your step "${step.title}": `))
-  }
-  if (steps.length > APPROACH_STEPS) {
-    const more = card.createEl('button', { cls: 'rv-more-link', text: isAll ? 'Show fewer' : `Show all ${steps.length} steps` })
-    more.addEventListener('click', () => {
-      if (isAll) plugin.expanded.delete(allKey)
-      else plugin.expanded.add(allKey)
-      plugin.refresh([TURN_VIEW])
-    })
-  }
-}
-
-/** One changed file: what Claude did, what it connects to, anything flagged, then the diff with its Why notes. */
-/**
- * One changed file. Every card starts closed to its header row, so all the files involved show at once; opened,
- * it shows what Claude did in large type, then (with two or more real changes) each change's what and why,
- * numbered. Connections live in the right sidebar. Inside an open card the code starts closed on a file with a
- * breakdown, so the summary is read first, and open on any other.
- */
-function renderFileCard(el, { file, step, info, isOutside, change, result, ownState, map, project, plugin }) {
-  const key = `${change.id}:${file.path}`
-  const changes = breakdownOf(info, file.path, map, change.files.map(f => f.path))
-  const hasBreakdown = changes.length > 0
-  const allChanges = info && Array.isArray(info.changes) ? info.changes : []
-  const isCardOpen = plugin.openCards.has(key)
-  const isOpen = hasBreakdown ? plugin.toggledCode.has(key) : !plugin.toggledCode.has(key)
-  const toggleCard = () => {
-    if (isCardOpen) plugin.openCards.delete(key)
-    else plugin.openCards.add(key)
-    plugin.focus = file.path
-    plugin.refresh([TURN_VIEW, SIDE_VIEW])
-  }
-  const toggleCode = () => {
-    if (plugin.toggledCode.has(key)) plugin.toggledCode.delete(key)
-    else plugin.toggledCode.add(key)
-    plugin.focus = file.path
-    plugin.refresh([TURN_VIEW, SIDE_VIEW])
-  }
-  const section = el.createDiv({ cls: `rv-file${plugin.focus === file.path ? ' is-focus' : ''}${isCardOpen ? '' : ' is-closed'}` })
-  section.dataset.path = file.path
-
-  const head = section.createEl('button', { cls: 'rv-file-hd', attr: { 'aria-expanded': String(isCardOpen) } })
-  head.createEl('span', { cls: 'rv-step-no', text: String(step) })
-  head.createEl('span', { cls: 'rv-mono rv-strong rv-file-path', text: file.path })
-  const [label, tone] = CHANGE_LABELS[file.change] || ['Changed', 'muted']
-  chip(head, label, tone)
-  // How the changes fit the request, counted, so a folded card still shows anything nobody asked for.
-  for (const fit of ['yes', 'further', 'no']) {
-    const n = allChanges.filter(c => c.fits === fit).length
-    if (n) chip(head, `${n} ${FITS[fit][0]}`, FITS[fit][1])
-  }
-  counts(head, file.added, file.removed).addClass('rv-push')
-  setIcon(head.createEl('span', { cls: `rv-chevron${isCardOpen ? ' is-open' : ''}` }), 'chevron-right')
-  head.addEventListener('click', toggleCard)
-  if (!isCardOpen) return
-
-  const hero = section.createDiv({ cls: 'rv-hero' })
-  // Claude speaks here as the story's narrator: a small mark and label, then its words set like a pull-quote.
-  const voice = hero.createDiv({ cls: 'rv-hero-label' })
-  setIcon(voice.createEl('span', { cls: 'rv-hero-icon' }), isOutside ? 'file-diff' : 'sparkles')
-  voice.createEl('span', { text: isOutside ? 'What changed' : 'What Claude did' })
-  if (info && info.did) hero.createEl('p', { cls: 'rv-did', text: info.did })
-  else if (!ownState.isPending) hero.createEl('p', { cls: 'rv-muted', text: result ? 'The review left no note on this file.' : 'No review of this file yet.' })
-  if (!hasBreakdown && info && info.why) whyLine(hero, info.why, 'rv-why-lead')
-  // One change makes no list, but whether it is what was asked for still shows.
-  const single = !hasBreakdown && allChanges.length === 1 ? allChanges[0] : null
-  if (single && single.fits) {
-    const line = hero.createDiv({ cls: 'rv-change-why rv-why-lead' })
-    line.createEl('span', { cls: `rv-why-word rv-change-key is-fit-${FITS[single.fits][1]}`, text: 'Fits?' })
-    chip(line, FITS[single.fits][0], FITS[single.fits][1])
-    if (single.serves) line.createEl('span', { cls: 'rv-change-serves', text: ` ${single.serves}` })
-  }
-
-  const reviewThis = text => {
-    const button = hero.createEl('button', { cls: 'rv-link rv-review-file', text })
-    button.addEventListener('click', event => {
-      event.stopPropagation()
-      plugin.focus = file.path
-      plugin.startReview(project.root, change.id, file.path)
-    })
-  }
-  if (ownState.isPending) hero.createEl('p', { cls: 'rv-muted', text: `Reviewing this file with ${plugin.modelLabel()}…` })
-  else if (ownState.failed) {
-    hero.createEl('p', { cls: 'rv-review-error', text: `This file's review did not finish: ${ownState.failed}` })
-    reviewThis('Try this file again ›')
-  } else if (ownState.isStale) reviewThis('This file changed after its review. Review it again ›')
-  else if (!(info && info.did) && change.files.length > 1) reviewThis('Review just this file ›')
-
-  if (hasBreakdown) {
-    const list = hero.createDiv({ cls: 'rv-breakdown' })
-    list.createDiv({ cls: 'rv-breakdown-title', text: `${changes.length} changes in this file` })
-    changes.forEach((c, k) => {
-      const changeKey = `${key}:${k}`
-      const row = list.createEl('button', { cls: `rv-change-row rv-k${k % CHANGE_COLORS}${plugin.activeChange === changeKey ? ' is-active' : ''}${c.fits === 'no' ? ' is-extra' : ''}` })
-      row.createEl('span', { cls: 'rv-kdot', text: String(k + 1) })
-      const words = row.createDiv({ cls: 'rv-change-words' })
-      const top = words.createDiv({ cls: 'rv-change-top' })
-      top.createEl('span', { cls: 'rv-change-title', text: c.title })
-      top.createEl('span', { cls: 'rv-mono rv-change-lines', text: c.from === c.to ? `line ${c.from}` : `lines ${c.from}–${c.to}` })
-      // Three short lines answer what changed, why, and whether it is what was asked for.
-      const grid = words.createDiv({ cls: 'rv-change-grid' })
-      const line = (key, cls) => {
-        grid.createEl('span', { cls: `rv-change-key ${cls}`, text: key })
-        return grid.createEl('span', { cls: 'rv-change-value' })
+    if (file.isSecret) {
+      body.createDiv({ cls: 'rv-g' }).createEl('span', { cls: 'rv-body rv-muted', text: 'Contents hidden: this looks like a secrets file, so Rearview never reads it.', attr: { style: 'grid-column: 3' } })
+      return
+    }
+    const covered = new Set()
+    for (const entry of fileEntries) {
+      const { c, key: changeKey } = entry
+      const checked = plugin.checked.has(changeKey)
+      const item = body.createDiv({ cls: `rv-item${plugin.activeChange === changeKey ? ' is-on' : ''}${checked ? ' is-checked' : ''}` })
+      item.dataset.key = changeKey
+      const title = item.createDiv({ cls: 'rv-g2 rv-item-head' })
+      title.createEl('span', { cls: 'rv-mono rv-cap rv-faint', text: c.from === c.to ? String(c.from) : `${c.from}–${c.to}` })
+      const titleRow = title.createDiv({ cls: 'rv-item-title' })
+      titleRow.createEl('span', { cls: 'rv-b6 rv-row-title', text: c.title })
+      tick(titleRow, changeKey, plugin)
+      const grid = item.createDiv({ cls: 'rv-g2' })
+      const line = (label) => {
+        grid.createEl('span', { cls: 'rv-glab', text: label })
+        return grid.createEl('span', { cls: 'rv-body' })
       }
       if (c.before && c.now) {
-        const value = line('Changed', 'is-changed')
-        value.createEl('span', { cls: 'rv-change-before', text: c.before })
-        value.createEl('span', { text: ` → ${c.now}` })
-      } else if (c.what) line('Changed', 'is-changed').setText(c.what)
-      if (c.why) line('Why', 'is-why').setText(c.why)
+        const value = line('Changed')
+        value.createEl('span', { cls: 'rv-muted', text: c.before })
+        value.createEl('span', { cls: 'rv-arrow', text: '→' })
+        value.createEl('span', { text: c.now })
+      } else if (c.what) line('Changed').setText(c.what)
+      if (c.why) line('Why').setText(c.why)
       if (c.fits) {
-        const value = line('Fits?', `is-fit-${FITS[c.fits][1]}`)
-        chip(value, FITS[c.fits][0], FITS[c.fits][1])
-        if (c.serves) value.createEl('span', { cls: 'rv-change-serves', text: ` ${c.serves}` })
+        const value = line('Fits?')
+        value.addClass('rv-cap')
+        const tag = value.createEl('span', { cls: `rv-tag rv-${FITS[c.fits][1]}-text` })
+        tag.createEl('span', { cls: 'rv-tag-dot' })
+        tag.createEl('span', { text: FITS[c.fits][0] })
+        if (c.ask) value.createEl('span', { cls: 'rv-faint', text: ` from R${c.ask}` })
+        if (c.fits !== 'yes' && c.serves) {
+          grid.createEl('span')
+          grid.createEl('span', { cls: 'rv-cap rv-orange-text', text: `Goes beyond what you asked: ${c.serves}` })
+        }
       }
-      row.addEventListener('click', () => {
-        plugin.activeChange = changeKey
-        plugin.toggledCode.add(key)
-        plugin.focus = file.path
-        plugin.refresh([TURN_VIEW, SIDE_VIEW])
-        const target = [...document.querySelectorAll('.rv-change-head')].find(e => e.dataset.key === changeKey)
-        if (target) target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      const rows = snippetOf(file, c)
+      if (rows.length) {
+        for (const r of rows) covered.add(r)
+        codeBlock(item, filePath, c, rows)
+      }
+    }
+    // Lines no listed change covers, folded at the end, so no code goes unshown.
+    const all = parseDiff(file.diff || '').filter(r => r.kind !== 'hunk')
+    const seen = new Set([...covered].map(r => `${r.kind}:${r.newNo}:${r.oldNo}`))
+    const rest = all.filter(r => !seen.has(`${r.kind}:${r.newNo}:${r.oldNo}`) && r.kind !== 'same')
+    if (rest.length) {
+      const otherKey = `${key}:other`
+      const otherOpen = plugin.openCards.has(otherKey)
+      const other = body.createDiv({ cls: 'rv-g2' })
+      other.createEl('span')
+      const button = other.createEl('button', { cls: 'rv-link rv-link-quiet', text: `${otherOpen ? 'Hide' : 'Show'} ${rest.length} other changed ${rest.length === 1 ? 'line' : 'lines'} in this file ${otherOpen ? '⌃' : '⌄'}` })
+      button.addEventListener('click', () => {
+        if (otherOpen) plugin.openCards.delete(otherKey)
+        else plugin.openCards.add(otherKey)
+        plugin.refresh([TURN_VIEW])
       })
-    })
-    const show = section.createEl('button', { cls: 'rv-code-toggle', attr: { 'aria-expanded': String(isOpen) } })
-    setIcon(show.createEl('span', { cls: `rv-chevron${isOpen ? ' is-open' : ''}` }), 'chevron-right')
-    const lines = parseDiff(file.diff || '').filter(row => row.kind !== 'hunk').length
-    show.createEl('span', { text: isOpen ? 'Hide the code' : `Show the code · ${lines} lines` })
-    show.addEventListener('click', toggleCode)
-  }
-  if (isOpen) renderDiff(section, file, { changes, key, plugin })
+      if (otherOpen) {
+        const item = body.createDiv({ cls: 'rv-item' })
+        codeBlock(item, filePath, null, all.filter(r => !seen.has(`${r.kind}:${r.newNo}:${r.oldNo}`)))
+      }
+    }
+    if (!fileEntries.length && !rest.length && !file.diff) body.createDiv({ cls: 'rv-g' }).createEl('span', { cls: 'rv-body rv-muted', text: 'No line changes to show (a binary, large, renamed or empty file).', attr: { style: 'grid-column: 3' } })
+  })
 }
 
-function whyLine(parent, why, cls = '') {
-  const line = parent.createDiv({ cls: `rv-change-why ${cls}`.trim() })
-  line.createEl('span', { cls: 'rv-why-word', text: 'Why' })
-  line.createEl('span', { text: why })
-}
-
-/** A file's diff. Lines inside a breakdown change carry that change's colour, under a header with its number and title. */
-function renderDiff(section, file, { changes, key, plugin }) {
-  if (file.isSecret) {
-    section.createDiv({ cls: 'rv-muted rv-pad', text: 'Contents hidden: this looks like a secrets file, so Rearview never reads it.' })
-    return
-  }
-  if (!file.diff) {
-    section.createDiv({ cls: 'rv-muted rv-pad', text: 'No line changes to show (a binary, large, renamed or empty file).' })
-    return
-  }
-  const headed = new Set()
-  const code = section.createDiv({ cls: 'rv-code' })
-  const rows = parseDiff(file.diff)
-  let current = -1
+/** A change's code: a header with the file, lines and counts, then the diff rows. */
+function codeBlock(parent, filePath, c, rows) {
+  const block = parent.createDiv({ cls: 'rv-g2' })
+  block.createEl('span', { cls: 'rv-glab', text: 'Code' })
+  const box = block.createDiv({ cls: 'rv-code' })
+  const head = box.createDiv({ cls: 'rv-code-head rv-mono' })
+  head.createEl('span', { text: c ? `${filePath} · ${lineWord(c)}` : `${filePath} · other changed lines` })
+  const adds = rows.filter(r => r.kind === 'add').length
+  const dels = rows.filter(r => r.kind === 'del').length
+  if (adds) head.createEl('span', { cls: 'rv-green-text', text: `+${adds}` })
+  if (dels) head.createEl('span', { cls: 'rv-red-text', text: `−${dels}` })
+  const lines = box.createDiv({ cls: 'rv-code-lines' })
   for (const row of rows.slice(0, MAX_DIFF_LINES)) {
-    if (row.kind === 'hunk') {
-      current = -1
-      code.createDiv({ cls: 'rv-hunk', text: row.text })
-      continue
-    }
-    // A removed line has no new line number, so it belongs to the change of the line before it.
-    if (row.kind !== 'del') current = changeAt(changes, row.newNo)
-    const changeKey = `${key}:${current}`
-    if (current !== -1 && !headed.has(current)) {
-      headed.add(current)
-      const head = code.createDiv({ cls: `rv-change-head rv-k${current % CHANGE_COLORS}${plugin.activeChange === changeKey ? ' is-active' : ''}` })
-      head.dataset.key = changeKey
-      head.createEl('span', { cls: 'rv-kdot', text: String(current + 1) })
-      head.createEl('span', { cls: 'rv-change-title', text: changes[current].title })
-    }
-    const inK = current !== -1 ? ` rv-in-change rv-k${current % CHANGE_COLORS}${plugin.activeChange === changeKey ? ' is-active' : ''}` : ''
-    const line = code.createDiv({ cls: `rv-ln rv-ln-${row.kind}${inK}` })
+    const line = lines.createDiv({ cls: `rv-ln rv-ln-${row.kind}` })
     line.createEl('span', { cls: 'rv-no', text: row.kind === 'del' ? '' : String(row.newNo) })
     line.createEl('span', { cls: 'rv-sign', text: row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : '' })
     line.createEl('span', { cls: 'rv-tx', text: row.text })
   }
-  if (rows.length > MAX_DIFF_LINES) code.createDiv({ cls: 'rv-more', text: `${rows.length - MAX_DIFF_LINES} more lines not shown` })
+  if (rows.length > MAX_DIFF_LINES) lines.createDiv({ cls: 'rv-more', text: `${rows.length - MAX_DIFF_LINES} more lines not shown` })
 }
 
-/** Under the cards: files the change reaches through their imports without editing them. */
+/** Under the views: files the change reaches through their imports without editing them. */
 function renderAffected(el, map, shownPaths, plugin) {
   const affected = map ? map.nodes.filter(n => n.kind === 'affected') : []
   if (affected.length === 0) return
-  const card = el.createDiv({ cls: 'rv-card rv-leftovers' })
-  sectionTitle(card, 'Not changed, but affected')
+  const section = el.createDiv({ cls: 'rv-affected' })
+  const head = section.createDiv({ cls: 'rv-g' })
+  head.createEl('span')
+  head.createEl('span', { cls: 'rv-lab', text: 'Not changed, but affected' })
   for (const node of affected) {
     const used = map.edges.filter(e => e.from === node.path && shownPaths.has(e.to)).map(e => path.basename(e.to))
-    const line = card.createDiv({ cls: 'rv-leftover' })
-    const name = line.createEl('button', { cls: 'rv-link rv-mono', text: node.path })
+    const line = section.createDiv({ cls: 'rv-g' })
+    line.createEl('span')
+    const name = line.createEl('button', { cls: 'rv-link rv-mono', text: path.basename(node.path), attr: { title: node.path } })
     name.addEventListener('click', () => plugin.showFile(node.path))
-    line.createEl('span', { text: `Uses ${used.join(', ') || 'a changed file'}, so this change reaches it. Claude didn't edit it: worth a quick look.` })
+    line.createEl('span', { cls: 'rv-body rv-muted', text: `Uses ${used.join(', ') || 'a changed file'}, so this change reaches it. Claude didn't edit it: worth a quick look.` })
   }
 }
 
@@ -2553,12 +2526,11 @@ class SideView extends ItemView {
     el.empty()
     el.addClass('rv', 'rv-side')
     const plugin = this.plugin
-    const head = el.createDiv({ cls: 'rv-side-head' })
-    head.createEl('span', { cls: 'rv-sidebar-title', text: 'How the files connect' })
-    const tabs = head.createDiv({ cls: 'rv-seg', attr: { role: 'group', 'aria-label': 'Panel view' } })
+    el.createEl('div', { cls: 'rv-lab rv-side-title', text: 'How the files connect' })
+    const tabs = el.createDiv({ cls: 'rv-tabs', attr: { role: 'tablist', 'aria-label': 'Panel view' } })
     for (const [id, label] of [['links', 'Connections'], ['impact', 'Impact'], ['trace', 'Trace']]) {
       const isOn = plugin.panel === id
-      const button = tabs.createEl('button', { cls: isOn ? 'is-active' : '', text: label, attr: { 'aria-pressed': String(isOn) } })
+      const button = tabs.createEl('button', { cls: `rv-tab${isOn ? ' is-active' : ''}`, text: label, attr: { role: 'tab', 'aria-selected': String(isOn) } })
       button.addEventListener('click', () => {
         plugin.panel = id
         this.render()
@@ -2588,15 +2560,15 @@ class SideView extends ItemView {
     const info = result && result.files.find(f => f.file === focus)
 
     const look = el.createDiv({ cls: 'rv-look' })
-    const lookHead = look.createDiv({ cls: 'rv-card-hd' })
-    lookHead.createEl('span', { cls: 'rv-sidebar-title', text: 'Looking at' })
-    chip(lookHead, mark.label, mark.tone)
-    look.createDiv({ cls: 'rv-mono rv-strong', text: path.basename(focus), attr: { title: focus } })
-    if (info && info.effect) look.createDiv({ cls: 'rv-muted', text: info.effect })
+    look.createEl('span', { cls: 'rv-lab', text: 'Looking at' })
+    const name = look.createDiv({ cls: 'rv-look-name' })
+    name.createEl('span', { cls: 'rv-mono rv-b6', text: path.basename(focus), attr: { title: focus } })
+    name.createEl('span', { cls: `rv-cap rv-${mark.tone}-text`, text: mark.label })
+    if (info && info.effect) look.createDiv({ cls: 'rv-body rv-muted', text: info.effect })
     const open = look.createEl('button', { cls: 'rv-link', text: 'Open in editor ›' })
     open.addEventListener('click', () => plugin.openProjectFile(project.root, focus))
 
-    el.createDiv({ cls: 'rv-muted rv-flow-hint', text: `In the order the change flows. Lines show what ${path.basename(focus)} uses and what uses it.` })
+    el.createDiv({ cls: 'rv-lab rv-flow-title', text: 'In the order the change flows' })
     const rows = flowList(order, map.nodes, map.edges)
     const uses = map.edges.filter(e => e.from === focus).map(e => e.to)
     const usedBy = map.edges.filter(e => e.to === focus).map(e => e.from)
@@ -2605,7 +2577,7 @@ class SideView extends ItemView {
       const rel = file === focus ? 'here' : uses.includes(file) ? 'uses' : usedBy.includes(file) ? 'usedby' : ''
       const m = MAP_MARKS[kindOf.get(file)] || MAP_MARKS.untouched
       const row = flow.createEl('button', { cls: `rv-flow-row${rel ? ` is-${rel}` : ''}`, attr: { title: `${file} · ${m.label}`, 'aria-pressed': String(rel === 'here') } })
-      row.createEl('span', { cls: `rv-flow-mark rv-${m.tone}-mark`, text: m.letter })
+      row.createEl('span', { cls: `rv-flow-mark rv-${m.tone}-text`, text: m.letter })
       row.createEl('span', { cls: `rv-mono rv-flow-name${kindOf.get(file) === 'untouched' ? ' is-faint' : ''}`, text: path.basename(file) })
       row.addEventListener('click', () => plugin.showFile(file))
     })
@@ -2627,7 +2599,7 @@ class SideView extends ItemView {
     const legend = el.createDiv({ cls: 'rv-flow-legend' })
     for (const k of ['edited', 'new', 'affected']) {
       const item = legend.createEl('span')
-      item.createEl('span', { cls: `rv-flow-mark rv-${MAP_MARKS[k].tone}-mark`, text: MAP_MARKS[k].letter })
+      item.createEl('span', { cls: `rv-flow-mark rv-${MAP_MARKS[k].tone}-text`, text: MAP_MARKS[k].letter })
       item.createEl('span', { text: ` ${MAP_MARKS[k].label.toLowerCase()}` })
     }
 
@@ -2644,11 +2616,11 @@ class SideView extends ItemView {
       const group = groups.createDiv({ cls: 'rv-link-group' })
       const title = group.createDiv({ cls: 'rv-link-group-title' })
       title.createEl('span', { cls: `rv-swatch-line is-${rel}` })
-      title.createEl('span', { cls: 'rv-strong rv-grow', text: label })
-      title.createEl('span', { cls: 'rv-muted', text: String(files.length) })
+      title.createEl('span', { cls: 'rv-lab rv-grow', text: label })
+      title.createEl('span', { cls: 'rv-cap rv-faint', text: String(files.length) })
       for (const file of files) {
         const item = group.createEl('button', { cls: 'rv-hit', attr: { title: file } })
-        item.createEl('span', { cls: 'rv-mono rv-strong', text: path.basename(file) })
+        item.createEl('span', { cls: 'rv-mono rv-b6', text: path.basename(file) })
         item.createEl('span', { cls: 'rv-muted rv-hit-how', text: howOf(file) || (rel === 'uses' ? `${path.basename(focus)} imports it` : `imports ${path.basename(focus)}`) })
         item.addEventListener('click', () => plugin.showFile(file))
       }
@@ -2674,9 +2646,9 @@ class SideView extends ItemView {
       const m = MAP_MARKS[kind]
       const group = el.createDiv({ cls: 'rv-link-group' })
       const title = group.createDiv({ cls: 'rv-link-group-title' })
-      title.createEl('span', { cls: `rv-flow-mark rv-${m.tone}-mark`, text: m.letter })
-      title.createEl('span', { cls: 'rv-strong rv-grow', text: m.label })
-      title.createEl('span', { cls: 'rv-muted', text: String(files.length) })
+      title.createEl('span', { cls: `rv-flow-mark rv-${m.tone}-text`, text: m.letter })
+      title.createEl('span', { cls: 'rv-lab rv-grow', text: m.label })
+      title.createEl('span', { cls: 'rv-cap rv-faint', text: String(files.length) })
       for (const file of files) {
         const item = group.createEl('button', { cls: 'rv-hit', attr: { title: file } })
         const top = item.createDiv({ cls: 'rv-impact-top' })
@@ -2692,7 +2664,7 @@ class SideView extends ItemView {
       }
     }
 
-    sectionTitle(el, 'Your request, after these changes')
+    el.createEl('div', { cls: 'rv-lab rv-side-section', text: 'Your request, after these changes' })
     if (!result) return el.createDiv({ cls: 'rv-muted', text: 'Review these changes to see which parts of your request each file moves.' })
     if (result.requirements.length === 0) return el.createDiv({ cls: 'rv-muted', text: 'The review found no request to check these changes against.' })
     for (const r of result.requirements) {
@@ -2727,7 +2699,7 @@ class SideView extends ItemView {
     if (trace.state === 'running') return box.createDiv({ cls: 'rv-muted', text: 'Searching…' })
     if (trace.state === 'failed') return box.createDiv({ cls: 'rv-muted', text: 'Trace needs git, and the project to be a git repository.' })
     for (const [title, hits] of [['Defined in', trace.definitions], ['Also used in', trace.uses]]) {
-      const card = box.createDiv({ cls: 'rv-card rv-tight' })
+      const card = box.createDiv({ cls: 'rv-card' })
       card.createDiv({ cls: 'rv-muted rv-strong', text: title })
       if (hits.length === 0) card.createDiv({ cls: 'rv-muted', text: 'Nowhere else.' })
       for (const hit of hits) {
@@ -2875,4 +2847,4 @@ class RearviewSettingTab extends PluginSettingTab {
 }
 
 module.exports = RearviewPlugin
-module.exports.testing = { SideView, groupByRequest, changesByFile, lastQuestion, commandWrites, REVIEW_SYSTEM, reviewKey, pickReview, breakdownOf, changeAt, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, thenLine, resultOf, findImporters, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
+module.exports.testing = { SideView, groupByRequest, changesByFile, lastQuestion, commandWrites, REVIEW_SYSTEM, reviewKey, pickReview, changeAt, snippetOf, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, resultOf, findImporters, requestText, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }

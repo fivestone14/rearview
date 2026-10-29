@@ -76,10 +76,9 @@ test('relative imports resolve to project paths; package imports do not', () => 
 // ---------- reviews ----------
 
 test('a review reply is read tolerantly, and a reply that is not a review is refused', () => {
-  const fenced = '```json\n' + JSON.stringify({ requirements: [{ text: 'Add toggle', status: 'done' }, { status: 'done' }], notes: [{ file: 'a.ts', line: 2, why: 'Adds it', symbols: ['toggle', 'not a name'] }], steps: [{ kind: 'weird', title: 'Did it' }] }) + '\n```'
+  const fenced = '```json\n' + JSON.stringify({ requirements: [{ text: 'Add toggle', status: 'done' }, { status: 'done' }], steps: [{ kind: 'weird', title: 'Did it' }] }) + '\n```'
   const review = t.parseReview(fenced)
   assert.deepStrictEqual(review.requirements.map(r => r.id), ['R1'])
-  assert.deepStrictEqual(review.notes[0].symbols, ['toggle'])
   assert.strictEqual(review.steps[0].kind, 'decision')
   assert.strictEqual(t.parseReview('Sorry, I cannot help with that.'), null)
 })
@@ -122,24 +121,6 @@ test('the request card shows only the person\'s words, not the context Claude Co
   assert.strictEqual(t.requestText(request), 'Where are we on this project?')
   assert.strictEqual(t.titleOf(request), 'Where are we on this project?')
   assert.strictEqual(t.requestText('Line one\n\nLine two'), 'Line one\n\nLine two')
-})
-
-test('the gaps message lists what is partly done, missed, unrequested or against a guardrail, and nothing else', () => {
-  const result = {
-    requirements: [
-      { id: 'R1', text: 'Add a toggle', status: 'done', finding: 'Added' },
-      { id: 'R2', text: 'Add tests', status: 'missed', finding: 'No tests' },
-    ],
-    steps: [{ kind: 'unrequested', title: 'Changed the radius' }, { kind: 'decision', title: 'Used context' }],
-    violations: [{ guardrail: 'Add tests for new behavior', finding: 'No tests added' }],
-  }
-  const message = t.gapsMessage(result)
-  assert.match(message, /It can be wrong/)
-  assert.match(message, /1\. Add tests \(missed\): No tests/)
-  assert.match(message, /2\. Not requested: Changed the radius/)
-  assert.match(message, /3\. Goes against the guardrail "Add tests for new behavior"/)
-  assert.doesNotMatch(message, /Add a toggle|Used context/)
-  assert.strictEqual(t.gapsMessage({ requirements: [result.requirements[0]], steps: [], violations: [] }), '')
 })
 
 test('the sidebar shows commits ahead of and behind GitHub, or nothing without an upstream', () => {
@@ -212,18 +193,11 @@ test('the review is asked about files in story order, told which ones have no Cl
     links: [{ from: 'b.ts', to: 'a.ts', how: 'reads the theme' }, { from: 'x' }],
     violations: [{ guardrail: 'Add tests', finding: 'None added', evidence: [{ file: 'a.ts' }] }],
   }))
-  assert.deepStrictEqual(review.files, [{ file: 'a.ts', did: 'Added it', why: '', effect: 'Theme is shared', next: 'b.ts uses it', changes: [] }])
+  assert.deepStrictEqual(review.files, [{ file: 'a.ts', did: 'Added it', why: '', effect: 'Theme is shared', changes: [] }])
   assert.deepStrictEqual(review.links, [{ from: 'b.ts', to: 'a.ts', how: 'reads the theme' }])
   assert.strictEqual(review.violations[0].guardrail, 'Add tests')
   // A review saved before these fields existed still draws, with each list empty.
-  assert.deepStrictEqual(t.resultOf({ state: 'done', result: { requirements: [], notes: [], steps: [] } }).links, [])
-})
-
-test('a Then line is drawn only between files linked by imports', () => {
-  const linked = new Set(['a.ts', 'b.ts'])
-  assert.strictEqual(t.thenLine(null, 'a.ts', 'b.ts', [{ from: 'b.ts', to: 'a.ts' }], linked), 'b.ts uses a.ts.')
-  // A file no import links to the others gets no "Then" line, even when the review wrote one.
-  assert.strictEqual(t.thenLine({ next: 'README.md describes these tests.' }, 'b.ts', 'README.md', [{ from: 'b.ts', to: 'a.ts' }], linked), '')
+  assert.deepStrictEqual(t.resultOf({ state: 'done', result: { requirements: [], steps: [] } }).links, [])
 })
 
 test('changes are reviewed by themselves only once the files and Claude have both gone quiet, and once per version', () => {
@@ -260,23 +234,6 @@ test('changes are reviewed by themselves only once the files and Claude have bot
   assert.strictEqual(run({ changedAt: quiet, workedAt: quiet, review: { state: 'done', signature } }), 0, 'already reviewed')
   assert.strictEqual(run({ changedAt: quiet, workedAt: quiet, review: { state: 'failed', signature } }), 0, 'a failed review is not retried by itself')
   assert.strictEqual(run({ changedAt: quiet, workedAt: quiet, review: { state: 'done', signature: 'older' } }), 1, 'the files moved on')
-})
-
-test('a file gets a numbered breakdown only with two or more real changes, and its links only to files really connected', () => {
-  const review = t.parseReview(JSON.stringify({ files: [{ file: 'src/ctx.ts', did: 'Holds the theme.', changes: [
-    { title: 'Lets any screen ask for the theme', from: 20, to: 22, what: 'A shortcut.', used: [{ file: 'Panel.tsx', line: 6, how: 'the switch' }, { file: 'Made/Up.ts', how: 'guess' }] },
-    { title: 'Checks the system setting', from: 4, what: 'Once at start.' },
-    { title: 'No line', what: 'dropped' },
-  ] }] }))
-  const info = review.files[0]
-  assert.deepStrictEqual(info.changes.map(c => [c.title, c.from, c.to]), [['Checks the system setting', 4, 4], ['Lets any screen ask for the theme', 20, 22]])
-  const map = { nodes: [], edges: [{ from: 'src/Panel.tsx', to: 'src/ctx.ts' }] }
-  const changes = t.breakdownOf(info, 'src/ctx.ts', map, ['src/ctx.ts'])
-  assert.deepStrictEqual(changes[1].used, [{ file: 'src/Panel.tsx', line: 6, how: 'the switch' }])
-  assert.strictEqual(t.changeAt(changes, 21), 1)
-  assert.strictEqual(t.changeAt(changes, 10), -1)
-  assert.deepStrictEqual(t.breakdownOf({ changes: [changes[0]] }, 'src/ctx.ts', map, []), [], 'one change: the lead line says it all')
-  assert.deepStrictEqual(t.breakdownOf({ did: 'old review' }, 'src/ctx.ts', map, []), [], 'reviews saved before breakdowns still draw')
 })
 
 test('one file can be reviewed alone, and its card draws on whichever review finished last', () => {
@@ -416,7 +373,7 @@ test('a short reply keeps the question Claude asked before it, and the review is
   assert.deepStrictEqual(change.requests, ['Yes, build it (answering: "Does the Changed / Why / Fits? format work?")'])
 })
 
-test('changes are grouped under the request they came from, and what nobody asked for is set apart', () => {
+test('changes are grouped under the request they came from, newest first, and what nobody asked for is set apart', () => {
   const review = t.parseReview(JSON.stringify({
     asks: [{ n: 1, meaning: 'Stop false flags from shell edits.' }, { n: 2, meaning: 'Fold every file.' }],
     files: [{ file: 'main.js', changes: [
@@ -432,14 +389,26 @@ test('changes are grouped under the request they came from, and what nobody aske
   const asks = [{ text: 'Summarize in short' }, { text: 'Yes, fix it' }, { text: 'Collapse them all' }]
   const entries = review.files[0].changes.map((c, k) => ({ file: 'main.js', k, c, review: done, result: done.result }))
   const { groups, extras } = t.groupByRequest(asks, entries)
-  assert.deepStrictEqual(groups.map(g => [g.ask.text, g.meaning, g.changes.map(e => e.c.title)]), [
-    ['Summarize in short', '', []],
-    ['Yes, fix it', 'Stop false flags from shell edits.', ['Spot command writes']],
-    ['Collapse them all', 'Fold every file.', ['Fold cards', 'Open from sidebar']],
+  // Newest request first, so the latest work is at the top.
+  assert.deepStrictEqual(groups.map(g => [g.n, g.ask.text, g.meaning, g.changes.map(e => e.c.title)]), [
+    [3, 'Collapse them all', 'Fold every file.', ['Fold cards', 'Open from sidebar']],
+    [2, 'Yes, fix it', 'Stop false flags from shell edits.', ['Spot command writes']],
+    [1, 'Summarize in short', '', []],
   ])
   assert.deepStrictEqual(extras.map(e => e.c.title), ['Hide Then lines'])
   const prompt = t.reviewPrompt({ requests: ['Yes, fix it', 'Collapse them all'], files: [], order: [], edges: [], outside: [], filesRead: [], agentMessages: '' })
   assert.match(prompt, /REQUESTS:\n1\. Yes, fix it\n2\. Collapse them all/)
+})
+
+test('each change shows just its own lines of the diff, with a line of context either side', () => {
+  const diff = '@@ -1,6 +1,7 @@\n a\n-b\n+B\n c\n+d\n e\n f'
+  const file = { path: 'x.ts', diff }
+  const rows = t.snippetOf(file, { from: 2, to: 2 })
+  assert.deepStrictEqual(rows.map(r => [r.kind, r.text]), [['same', 'a'], ['del', 'b'], ['add', 'B'], ['same', 'c']])
+  assert.deepStrictEqual(t.snippetOf(file, { from: 4, to: 4 }).map(r => r.text), ['c', 'd', 'e'])
+  assert.deepStrictEqual(t.snippetOf(file, { from: 40, to: 41 }), [], 'lines outside the diff show nothing')
+  assert.strictEqual(t.changeAt([{ from: 2, to: 2 }, { from: 4, to: 4 }], 4), 1)
+  assert.strictEqual(t.changeAt([{ from: 2, to: 2 }], 9), -1)
 })
 
 // ---------- Git ----------
