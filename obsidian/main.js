@@ -1151,12 +1151,16 @@ class RearviewPlugin extends Plugin {
     return (MODEL_PRESETS[this.settings.review.preset] || MODEL_PRESETS['claude-code']).label
   }
 
-  /** Queues a change for review by the chosen model; one review runs at a time. */
-  startReview(root, id) {
-    const held = this.reviews[id]
+  /**
+   * Queues a change for review by the chosen model, or only one of its files when `file` is given (kept under
+   * `<id>#<file>`, so it sits beside the whole change's review). One review runs at a time.
+   */
+  startReview(root, id, file = null) {
+    const key = reviewKey(id, file)
+    const held = this.reviews[key]
     if (held && held.state === 'pending') return
-    this.reviews[id] = { state: 'pending' }
-    this.reviewQueue.push({ root, id })
+    this.reviews[key] = { state: 'pending', file }
+    this.reviewQueue.push({ root, id, file })
     this.refresh()
     this.runReviews()
   }
@@ -1167,24 +1171,30 @@ class RearviewPlugin extends Plugin {
     if (!next) return
     this.isReviewing = true
     const by = this.modelLabel()
+    const key = reviewKey(next.id, next.file)
     let signature = null
     try {
       const project = this.projects.get(next.root)
       const change = project && this.changeById(project, next.id)
-      if (!change || change.files.length === 0) {
-        delete this.reviews[next.id]
+      const files = change ? change.files.filter(f => !next.file || f.path === next.file) : []
+      if (files.length === 0) {
+        delete this.reviews[key]
         return
       }
-      signature = change.signature
+      signature = changeSignature(files)
+      // The Map is the whole change's, so a single file's review still knows what it connects to.
       const map = await this.buildMapFor(change)
-      const order = buildOrder(change.files.map(f => f.path), map.edges)
-      const prompt = reviewPrompt({ ...change, order, edges: map.edges, guardrails: this.guardrailsOn() })
+      const paths = new Set(files.map(f => f.path))
+      const order = buildOrder([...paths], map.edges)
+      const edges = next.file ? map.edges.filter(e => paths.has(e.from) || paths.has(e.to)) : map.edges
+      const outside = change.outside.filter(p => paths.has(p))
+      const prompt = reviewPrompt({ ...change, files, order, edges, outside, guardrails: this.guardrailsOn() })
       const result = parseReview(await runModel(this.settings.review, REVIEW_SYSTEM, prompt, name => this.getSecret(name), requestUrl))
-      this.reviews[next.id] = result
-        ? { state: 'done', result, by, reviewedAt: Date.now(), signature }
-        : { state: 'failed', reason: `${by} answered, but not with the review asked for. Try again, or choose a stronger model.`, by, reviewedAt: Date.now(), signature }
+      this.reviews[key] = result
+        ? { state: 'done', result, by, reviewedAt: Date.now(), signature, file: next.file }
+        : { state: 'failed', reason: `${by} answered, but not with the review asked for. Try again, or choose a stronger model.`, by, reviewedAt: Date.now(), signature, file: next.file }
     } catch (error) {
-      this.reviews[next.id] = { state: 'failed', reason: error.message, by, reviewedAt: Date.now(), signature }
+      this.reviews[key] = { state: 'failed', reason: error.message, by, reviewedAt: Date.now(), signature, file: next.file }
     } finally {
       this.isReviewing = false
       await this.saveReviews()
@@ -1753,6 +1763,20 @@ const MAP_MARKS = {
   untouched: { letter: '', label: 'Unchanged, used by the changes', tone: 'muted' },
 }
 
+/** Where a review is kept: the change's id, or `<id>#<file>` for one file's own review. */
+function reviewKey(id, file) {
+  return file ? `${id}#${file}` : id
+}
+
+/**
+ * The review a file card draws on: the file's own review or the whole change's, whichever finished last.
+ * Either is null when there is none; a running or failed review is not drawn from.
+ */
+function pickReview(whole, own) {
+  const done = [whole, own].filter(r => r && r.state === 'done')
+  return done.sort((a, b) => (b.reviewedAt || 0) - (a.reviewedAt || 0))[0] || null
+}
+
 /** A finished review's result with every list present (reviews saved before a field existed lack it); null without one. */
 function resultOf(review) {
   if (!review || review.state !== 'done') return null
@@ -1944,11 +1968,28 @@ class TurnView extends ItemView {
 /** The review's state beside the heading: who reviewed it and Review again, a Review button, or the review running. */
 function reviewLine(parent, project, change, plugin) {
   const review = change.review || {}
+  const model = plugin.modelLabel()
   const line = parent.createDiv({ cls: 'rv-reviewed-by' })
-  if (review.state === 'pending') return line.createEl('span', { text: `Reviewing with ${plugin.modelLabel()}…` })
   if (change.files.length === 0) return
-  if (review.state === 'done') line.createEl('span', { text: `Reviewed by ${review.by} · ${relativeTime(review.reviewedAt)}` })
-  const button = line.createEl('button', { cls: review.state === 'done' ? '' : 'mod-cta', text: review.state === 'done' ? 'Review again' : review.state === 'failed' ? 'Try again' : `Review with ${plugin.modelLabel()}` })
+  // With a changed file selected, among several, the review can cover that file alone.
+  const picked = change.files.length > 1 && change.files.some(f => f.path === plugin.focus) ? plugin.focus : null
+  const own = picked ? plugin.reviews[reviewKey(change.id, picked)] : null
+  if (review.state === 'pending') line.createEl('span', { text: `Reviewing all ${change.files.length} files with ${model}…` })
+  else if (review.state === 'done') line.createEl('span', { text: `Reviewed by ${review.by} · ${relativeTime(review.reviewedAt)}` })
+  if (picked) {
+    if (own && own.state === 'pending') line.createEl('span', { text: `Reviewing ${path.basename(picked)}…` })
+    else {
+      const one = line.createEl('button', { cls: 'mod-cta', text: `Review ${path.basename(picked)} only` })
+      one.addEventListener('click', () => plugin.startReview(project.root, change.id, picked))
+    }
+    if (review.state !== 'pending') {
+      const all = line.createEl('button', { cls: 'rv-link', text: `Review all ${change.files.length} files` })
+      all.addEventListener('click', () => plugin.startReview(project.root, change.id))
+    }
+    return
+  }
+  if (review.state === 'pending') return
+  const button = line.createEl('button', { cls: review.state === 'done' ? '' : 'mod-cta', text: review.state === 'done' ? 'Review again' : review.state === 'failed' ? 'Try again' : `Review with ${model}` })
   button.addEventListener('click', () => plugin.startReview(project.root, change.id))
 }
 
@@ -1999,7 +2040,17 @@ function renderChange(el, shown, plugin) {
   order.forEach((filePath, i) => {
     const file = byPath.get(filePath)
     const isOutside = change.outside.includes(filePath) && change.turns.length > 0
-    renderFileCard(el, { file, step: i + 1, info: infoOf.get(filePath), isOutside, change, result, map, linkHow, project, plugin })
+    // A file reviewed on its own draws on that review while it is the newer one.
+    const own = plugin.reviews[reviewKey(change.id, filePath)] || null
+    const chosen = pickReview(change.review, own)
+    const fileResult = chosen === review ? result : resultOf(chosen)
+    const fileInfo = fileResult ? fileResult.files.find(f => f.file === filePath) : undefined
+    const ownState = {
+      isPending: !!own && own.state === 'pending',
+      failed: own && own.state === 'failed' ? own.reason : '',
+      isStale: !!chosen && chosen === own && own.signature !== changeSignature([file]),
+    }
+    renderFileCard(el, { file, step: i + 1, info: fileInfo, isOutside, change, result: fileResult, ownState, map, linkHow, project, plugin })
     if (i === order.length - 1) return
     if (linked.has(filePath) && !linked.has(order[i + 1])) {
       el.createDiv({ cls: 'rv-also', text: 'Also changed, not linked by imports to the files above' })
@@ -2089,7 +2140,7 @@ function renderApproach(el, change, result, shownPaths, project, plugin) {
  * breakdown, each change matched by number and colour to its block in the code. Code starts closed on a file
  * with a breakdown, so the summary is read first, and open on any other.
  */
-function renderFileCard(el, { file, step, info, isOutside, change, result, map, linkHow, project, plugin }) {
+function renderFileCard(el, { file, step, info, isOutside, change, result, ownState, map, linkHow, project, plugin }) {
   const key = `${change.id}:${file.path}`
   const changes = breakdownOf(info, file.path, map, change.files.map(f => f.path))
   const hasBreakdown = changes.length > 0
@@ -2124,7 +2175,21 @@ function renderFileCard(el, { file, step, info, isOutside, change, result, map, 
   setIcon(voice.createEl('span', { cls: 'rv-hero-icon' }), isOutside ? 'file-diff' : 'sparkles')
   voice.createEl('span', { text: isOutside ? 'What changed' : 'What Claude did' })
   if (info && info.did) hero.createEl('p', { cls: 'rv-did', text: info.did })
-  else hero.createEl('p', { cls: 'rv-muted', text: result ? 'The review left no note on this file.' : 'Review these changes to get a plain-English note on this file.' })
+  else if (!ownState.isPending) hero.createEl('p', { cls: 'rv-muted', text: result ? 'The review left no note on this file.' : 'No review of this file yet.' })
+  const reviewThis = text => {
+    const button = hero.createEl('button', { cls: 'rv-link rv-review-file', text })
+    button.addEventListener('click', event => {
+      event.stopPropagation()
+      plugin.focus = file.path
+      plugin.startReview(project.root, change.id, file.path)
+    })
+  }
+  if (ownState.isPending) hero.createEl('p', { cls: 'rv-muted', text: `Reviewing this file with ${plugin.modelLabel()}…` })
+  else if (ownState.failed) {
+    hero.createEl('p', { cls: 'rv-review-error', text: `This file's review did not finish: ${ownState.failed}` })
+    reviewThis('Try this file again ›')
+  } else if (ownState.isStale) reviewThis('This file changed after its review. Review it again ›')
+  else if (!(info && info.did) && change.files.length > 1) reviewThis('Review just this file ›')
 
   if (hasBreakdown) {
     const list = hero.createDiv({ cls: 'rv-breakdown' })
@@ -2662,4 +2727,4 @@ class RearviewSettingTab extends PluginSettingTab {
 }
 
 module.exports = RearviewPlugin
-module.exports.testing = { REVIEW_SYSTEM, breakdownOf, changeAt, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, flagsFor, thenLine, resultOf, findImporters, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }
+module.exports.testing = { REVIEW_SYSTEM, reviewKey, pickReview, breakdownOf, changeAt, syncLabel, hashText, changeSignature, matchTurns, buildOrder, flowList, flagsFor, thenLine, resultOf, findImporters, requestText, gapsMessage, parseReview, reviewPrompt, cliArgs, cliReply, runModel, listModels, findCommand, MODEL_PRESETS, parseTranscript, findTranscriptDir, parseDiff, score, titleOf, parseGrepLine, parseImports, resolveImport, buildMap, githubRepo, checkGitConnection, parseGitPatch, loadWorkingTree, loadCommits, loadCommitFiles }

@@ -432,3 +432,5 @@
 .rv .rv-change-head .rv-flag { margin-left: 30px; }
 .rv .rv-ln.rv-in-change { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--rv-k) 60%, transparent); }
 .rv .rv-ln.rv-in-change.is-active { box-shadow: inset 3px 0 0 var(--rv-k); }
+.rv .rv-review-file { align-self: flex-start; }
+.rv .rv-reviewed-by .rv-link { font-size: 12px; }

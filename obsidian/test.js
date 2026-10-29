@@ -288,6 +288,24 @@ test('a file gets a numbered breakdown only with two or more real changes, and i
   assert.deepStrictEqual(t.breakdownOf({ did: 'old review' }, 'src/ctx.ts', map, []), [], 'reviews saved before breakdowns still draw')
 })
 
+test('one file can be reviewed alone, and its card draws on whichever review finished last', () => {
+  assert.strictEqual(t.reviewKey('wt:/p', null), 'wt:/p')
+  assert.strictEqual(t.reviewKey('wt:/p', 'src/a.ts'), 'wt:/p#src/a.ts')
+  const whole = { state: 'done', reviewedAt: 100 }
+  const own = { state: 'done', reviewedAt: 200 }
+  assert.strictEqual(t.pickReview(whole, own), own)
+  assert.strictEqual(t.pickReview({ ...whole, reviewedAt: 300 }, own).reviewedAt, 300)
+  assert.strictEqual(t.pickReview(whole, { state: 'pending' }), whole, 'a running review is not drawn from')
+  assert.strictEqual(t.pickReview(null, { state: 'failed', reviewedAt: 999 }), null)
+  const plugin = Object.create(Rearview.prototype)
+  Object.assign(plugin, { reviews: {}, reviewQueue: [], refresh() {}, runReviews() {} })
+  plugin.startReview('/p', 'wt:/p', 'src/a.ts')
+  plugin.startReview('/p', 'wt:/p', 'src/a.ts')
+  assert.deepStrictEqual(plugin.reviewQueue, [{ root: '/p', id: 'wt:/p', file: 'src/a.ts' }], 'queued once')
+  assert.strictEqual(plugin.reviews['wt:/p#src/a.ts'].state, 'pending')
+  assert.strictEqual(plugin.reviews['wt:/p'], undefined, 'the whole change keeps its own review')
+})
+
 // ---------- Git ----------
 
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, stdio: 'pipe' })
